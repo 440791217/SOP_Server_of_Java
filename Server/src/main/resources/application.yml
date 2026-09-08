@@ -15,5 +15,18 @@ spring:
 
   application:
 
-    # 当前 Spring Boot 应用名称。
     name: SOP-Server
+
+onnx:
+  # YOLO12 ONNX 模型路径
+  model-path: models/yolo12s.onnx
+  # 是否启用 GPU (CUDA) 加速
+  gpu:
+    enabled: true
+    device-id: 0
+  # YOLO 输入图片尺寸
+  input-size: 640
+  # 置信度阈值
+  conf-threshold: 0.25
+  # NMS IoU 阈值
+  iou-threshold: 0.45
