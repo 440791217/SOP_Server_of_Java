@@ -31,6 +31,8 @@ public class OnnxInferenceService {
     @Autowired
     private GlobalFrameCache frameCache;
 
+    private final Object inferLock = new Object();
+
     public DetectionResult detect(String cameraId) {
         Mat frame = frameCache.getLatestFrame(cameraId);
         if (frame == null || frame.empty()) {
@@ -50,9 +52,21 @@ public class OnnxInferenceService {
             Map<String, OnnxTensor> inputs = new HashMap<>();
             inputs.put(inputName, inputTensor);
 
+            synchronized (inferLock) {
             try (OrtSession.Result output = modelManager.getSession().run(inputs)) {
                 String outputName = modelManager.getOutputName();
-                float[] rawOutput = (float[]) output.get(outputName).get().getValue();
+                Object outputValue = output.get(outputName).get().getValue();
+                float[] rawOutput;
+                if (outputValue instanceof float[] oneD) {
+                    rawOutput = oneD;
+                } else {
+                    float[][][] arr3d = (float[][][]) outputValue;
+                    int total = arr3d[0].length * arr3d[0][0].length;
+                    rawOutput = new float[total];
+                    for (int i = 0; i < arr3d[0].length; i++) {
+                        System.arraycopy(arr3d[0][i], 0, rawOutput, i * arr3d[0][i].length, arr3d[0][i].length);
+                    }
+                }
                 long[] outputShape = {1, 84, 8400};
 
                 List<DetectionPostprocessor.Detection> detections =
@@ -64,6 +78,7 @@ public class OnnxInferenceService {
                 log.info("[检测] 相机 [{}] 检测到 {} 个目标, 耗时 {}ms", cameraId, detections.size(), inferTime);
 
                 return new DetectionResult(cameraId, System.currentTimeMillis(), detections, inferTime);
+            }
             }
 
         } catch (OrtException e) {

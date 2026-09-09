@@ -19,7 +19,7 @@ spring:
 
 onnx:
   # YOLO12 ONNX 模型路径
-  model-path: models/yolo12s.onnx
+  model-path: Server/models/yolo12s.onnx
   # 是否启用 GPU (CUDA) 加速
   gpu:
     enabled: true

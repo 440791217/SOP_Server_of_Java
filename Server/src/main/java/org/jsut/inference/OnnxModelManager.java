@@ -4,6 +4,7 @@ import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtException;
 import ai.onnxruntime.OrtSession;
 import ai.onnxruntime.OrtSession.SessionOptions;
+import ai.onnxruntime.OrtLoggingLevel;
 import ai.onnxruntime.OrtSession.SessionOptions.OptLevel;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -36,8 +37,8 @@ public class OnnxModelManager {
             opts.setOptimizationLevel(OptLevel.BASIC_OPT);
 
             if (gpuEnabled) {
-                // 官方文档标准做法
                 opts.addCUDA(gpuDeviceId);
+                opts.setSessionLogLevel(OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR); // 只保留错误级别日志，抑制 CUDA EP 的性能警告
                 log.info("[ONNX] GPU (CUDA) 已启用, device ID: {}", gpuDeviceId);
             } else {
                 log.info("[ONNX] 运行在 CPU 模式");
