@@ -2,11 +2,8 @@ package org.jsut.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
-import org.bytedeco.javacpp.BytePointer;
-import org.bytedeco.javacpp.IntPointer;
-import org.bytedeco.opencv.global.opencv_imgcodecs;
-import org.bytedeco.opencv.opencv_core.Mat;
 import org.jsut.inference.OnnxInferenceService;
+import org.jsut.inference.DetectionPostprocessor;
 import org.jsut.task.camera.GlobalFrameCache;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -14,12 +11,12 @@ import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-// 收到 cameraId 后执行检测，将画面帧 JPEG 压缩 + 检测结果推送回前端
+// 收到 cameraId 后直接读缓存返回（零处理），推理异步进行不阻塞请求路径
 @Slf4j
 @Component
 public class DetectionWebSocketHandler extends TextWebSocketHandler {
@@ -33,6 +30,11 @@ public class DetectionWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
 
+    // 推理异步线程池：单线程串行推理，避免并发 GPU 冲突
+    private final ExecutorService inferExecutor = Executors.newSingleThreadExecutor();
+    // 记录每路相机是否正在推理，防止重复提交
+    private final Set<String> inferringCameras = ConcurrentHashMap.newKeySet();
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         sessions.put(session.getId(), session);
@@ -44,28 +46,38 @@ public class DetectionWebSocketHandler extends TextWebSocketHandler {
         try {
             var request = objectMapper.readValue(message.getPayload(), DetectionRequest.class);
             String cameraId = request.cameraId();
+            boolean doInfer = request.inference() == null || request.inference();
 
-            OnnxInferenceService.DetectionResult result = inferenceService.detect(cameraId);
-
-            Mat frame = frameCache.getLatestFrame(cameraId);
-            String frameBase64 = null;
-            int frameWidth = 0;
-            int frameHeight = 0;
-            if (frame != null && !frame.empty()) {
-                frameWidth = frame.cols();
-                frameHeight = frame.rows();
-                frameBase64 = encodeFrameToJpegBase64(frame);
-                frame.release();
+            // 异步触发推理
+            if (doInfer && !inferringCameras.contains(cameraId)) {
+                inferringCameras.add(cameraId);
+                inferExecutor.submit(() -> {
+                    try {
+                        OnnxInferenceService.DetectionResult result = inferenceService.detect(cameraId);
+                        frameCache.putDetections(cameraId, result.detections(), result.inferTimeMs());
+                    } catch (Exception e) {
+                        log.error("[WS] 异步推理异常", e);
+                    } finally {
+                        inferringCameras.remove(cameraId);
+                    }
+                });
             }
 
+            // 直接读缓存返回，请求路径上零处理
+            byte[] jpeg = frameCache.getJpegBytes(cameraId);
+            List<DetectionPostprocessor.Detection> detections = frameCache.getDetections(cameraId);
+            long inferTimeMs = frameCache.getInferTimeMs(cameraId);
+
             Map<String, Object> response = new HashMap<>();
-            response.put("cameraId", result.cameraId());
-            response.put("timestamp", result.timestamp());
-            response.put("detections", result.detections());
-            response.put("inferTimeMs", result.inferTimeMs());
-            response.put("frame", frameBase64);
-            response.put("width", frameWidth);
-            response.put("height", frameHeight);
+            response.put("cameraId", cameraId);
+            response.put("timestamp", System.currentTimeMillis());
+            response.put("detections", detections != null ? detections : List.of());
+            response.put("inferTimeMs", inferTimeMs);
+            response.put("frame", jpeg != null ? Base64.getEncoder().encodeToString(jpeg) : null);
+            response.put("width", frameCache.getJpegWidth(cameraId));
+            response.put("height", frameCache.getJpegHeight(cameraId));
+            response.put("origWidth", frameCache.getOrigWidth(cameraId));
+            response.put("origHeight", frameCache.getOrigHeight(cameraId));
 
             session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
         } catch (Exception e) {
@@ -77,26 +89,11 @@ public class DetectionWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    // 将 Mat 编码为 JPEG 压缩格式（quality=75），再转 Base64 用于文本传输
-    private String encodeFrameToJpegBase64(Mat mat) {
-        BytePointer buf = new BytePointer();
-        IntPointer params = new IntPointer(opencv_imgcodecs.IMWRITE_JPEG_QUALITY, 75);
-        boolean ok = opencv_imgcodecs.imencode(".jpg", mat, buf, params);
-        params.close();
-        if (!ok) return null;
-        int size = (int) buf.limit();
-        byte[] bytes = new byte[size];
-        buf.position(0);
-        buf.get(bytes);
-        buf.close();
-        return Base64.getEncoder().encodeToString(bytes);
-    }
-
     @Override
-    public void afterConnectionClosed(WebSocketSession session, org.springframework.web.socket.CloseStatus status) {
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session.getId());
         log.info("[WS] 连接关闭: {}, status: {}", session.getId(), status);
     }
 
-    public record DetectionRequest(String cameraId) {}
+    public record DetectionRequest(String cameraId, Boolean inference) {}
 }

@@ -22,6 +22,10 @@ public class OnnxInferenceService {
     @Autowired
     private OnnxModelManager modelManager;
 
+    public OnnxModelManager getModelManager() {
+        return modelManager;
+    }
+
     @Autowired
     private ImagePreprocessor preprocessor;
 
@@ -31,16 +35,12 @@ public class OnnxInferenceService {
     @Autowired
     private GlobalFrameCache frameCache;
 
-    private final Object inferLock = new Object();
-
     public DetectionResult detect(String cameraId) {
         Mat frame = frameCache.getLatestFrame(cameraId);
         if (frame == null || frame.empty()) {
             log.warn("[检测] 相机 [{}] 无可用帧", cameraId);
             return new DetectionResult(cameraId, System.currentTimeMillis(), List.of(), 0);
         }
-
-        long startTime = System.currentTimeMillis();
 
         try {
             ImagePreprocessor.PreprocessResult prep = preprocessor.preprocess(frame);
@@ -52,7 +52,7 @@ public class OnnxInferenceService {
             Map<String, OnnxTensor> inputs = new HashMap<>();
             inputs.put(inputName, inputTensor);
 
-            synchronized (inferLock) {
+            long inferStart = System.currentTimeMillis();
             try (OrtSession.Result output = modelManager.getSession().run(inputs)) {
                 String outputName = modelManager.getOutputName();
                 Object outputValue = output.get(outputName).get().getValue();
@@ -74,11 +74,10 @@ public class OnnxInferenceService {
                                 prep.origWidth(), prep.origHeight(),
                                 prep.resizedWidth(), prep.resizedHeight());
 
-                long inferTime = System.currentTimeMillis() - startTime;
+                long inferTime = System.currentTimeMillis() - inferStart;
                 log.info("[检测] 相机 [{}] 检测到 {} 个目标, 耗时 {}ms", cameraId, detections.size(), inferTime);
 
                 return new DetectionResult(cameraId, System.currentTimeMillis(), detections, inferTime);
-            }
             }
 
         } catch (OrtException e) {
