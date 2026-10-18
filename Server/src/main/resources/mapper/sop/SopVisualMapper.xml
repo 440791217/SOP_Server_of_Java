@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.sop.mapper.SopVisualMapper">
+  <select id="get" resultType="map">SELECT image_width,image_height,schema_version,guide_items,detection_regions FROM sop_step_visual WHERE attachment_id=#{attachmentId}</select>
+  <insert id="save">INSERT INTO sop_step_visual(attachment_id,image_width,image_height,schema_version,guide_items,detection_regions,created_by,updated_by)
+    VALUES(#{attachmentId},#{width},#{height},1,#{guides},#{regions},#{actor},#{actor})
+    ON DUPLICATE KEY UPDATE image_width=#{width},image_height=#{height},guide_items=#{guides},detection_regions=#{regions},updated_by=#{actor}
+  </insert>
+</mapper>

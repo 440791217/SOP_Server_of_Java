@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.user.mapper.UserMapper">
+    <!-- 显式按 record 构造参数顺序查询；不读取 password_hash。 -->
+    <select id="findById" resultType="org.jsut.modules.user.entity.User">
+        SELECT id, username, real_name, card_number, team_id,
+               phone, avatar_url, status, is_superuser,
+               created_at, updated_at, version
+        FROM sys_user
+        WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+</mapper>

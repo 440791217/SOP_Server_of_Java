@@ -1,0 +1,8 @@
+# Copy only this sop.bootstrap.root section into application.yml for the first startup.
+# Use your own password (8-128 characters); do not use this placeholder literally.
+sop:
+  bootstrap:
+    root:
+      enabled: true
+      password: "替换为你自己的平台root初始密码"
+# Once initialization succeeds, set enabled=false and remove password.

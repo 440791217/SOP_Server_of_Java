@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.execution.mapper.ExecutionMapper">
+ <resultMap id="execution" type="map" autoMapping="true"><result column="content_snapshot" property="content_snapshot" javaType="java.lang.String" jdbcType="LONGVARCHAR" typeHandler="org.apache.ibatis.type.StringTypeHandler"/></resultMap>
+ <select id="get" resultMap="execution">SELECT * FROM sop_execution WHERE id=#{id}</select>
+ <select id="lock" resultMap="execution">SELECT * FROM sop_execution WHERE id=#{id} FOR UPDATE</select>
+ <select id="request" resultMap="execution">SELECT * FROM sop_execution WHERE operator_id=#{uid} AND request_key=#{key}</select>
+ <sql id="filter">
+  <if test="!superuser">AND (p.owner_user_id=#{uid} OR (#{projectRead}=TRUE AND EXISTS(SELECT 1 FROM sop_project_member pm WHERE pm.project_id=e.project_id AND pm.user_id=#{uid})))</if>
+  <if test="projectName != null">AND LOCATE(#{projectName},e.project_name)>0</if>
+  <if test="stationName != null">AND LOCATE(#{stationName},e.station_name)>0</if>
+  <if test="operatorName != null">AND LOCATE(#{operatorName},e.operator_name)>0</if>
+  <if test="station != null">AND e.station_id=#{station}</if>
+  <if test="project != null">AND e.project_id=#{project}</if>
+  <if test="operator != null">AND e.operator_id=#{operator}</if>
+  <if test="product != null">AND LOCATE(#{product},e.product_code)>0</if>
+  <if test="status != null">AND e.status=#{status}</if>
+  <if test="active">AND e.status IN(0,1)</if>
+  <if test="from != null">AND e.started_at &gt;=#{from}</if>
+  <if test="until != null">AND e.started_at &lt;#{until}</if>
+ </sql>
+ <sql id="summary">e.id,e.task_id,e.project_id,e.subproject_id,e.station_id,e.operator_id,e.product_code,e.task_name,e.project_name,e.subproject_name,e.station_name,e.operator_name,e.revision_no,e.status,e.version,e.started_at,e.ended_at,e.updated_at</sql>
+ <select id="list" resultType="map">SELECT <include refid="summary"/> FROM sop_execution e JOIN sop_project p ON p.id=e.project_id WHERE 1=1 <include refid="filter"/> ORDER BY e.id DESC LIMIT #{limit} OFFSET #{offset}</select>
+ <select id="count" resultType="long">SELECT COUNT(*) FROM sop_execution e JOIN sop_project p ON p.id=e.project_id WHERE 1=1 <include refid="filter"/></select>
+ <insert id="insert" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_execution(request_key,task_id,project_id,subproject_id,station_id,active_station_id,sop_id,revision_id,operator_id,product_code,task_name,project_name,subproject_name,station_name,operator_name,revision_no,content_snapshot) VALUES(#{request_key},#{task_id},#{project_id},#{subproject_id},#{station_id},#{station_id},#{sop_id},#{revision_id},#{operator_id},#{product_code},#{task_name},#{project_name},#{subproject_name},#{station_name},#{operator_name},#{revision_no},#{content_snapshot})</insert>
+ <insert id="insertStep">INSERT INTO sop_execution_step(execution_id,position,step_id) VALUES(#{id},#{position},#{step_id})</insert>
+ <select id="steps" resultType="map">SELECT * FROM sop_execution_step WHERE execution_id=#{id} ORDER BY position</select>
+ <select id="events" resultType="map">SELECT e.*,u.real_name AS actor_name FROM sop_execution_event e JOIN sys_user u ON u.id=e.actor_id WHERE e.execution_id=#{id} ORDER BY e.id</select>
+ <update id="confirm">UPDATE sop_execution_step SET confirmed_at=CURRENT_TIMESTAMP(3),confirmed_by=#{actor} WHERE execution_id=#{id} AND position=#{position} AND confirmed_at IS NULL</update>
+ <update id="update">UPDATE sop_execution SET status=#{status},active_station_id=#{active_station_id},version=version+1,updated_at=CURRENT_TIMESTAMP(3)<if test="ended">,ended_at=CURRENT_TIMESTAMP(3)</if> WHERE id=#{id} AND version=#{version}</update>
+ <insert id="event">INSERT INTO sop_execution_event(execution_id,action,reason,actor_id) VALUES(#{id},#{action},#{reason},#{actor})</insert>
+</mapper>

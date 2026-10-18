@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.sop.mapper.SopMapper">
+  <sql id="scope">d.deleted_at IS NULL AND p.deleted_at IS NULL
+    <if test="!root">AND (p.owner_user_id=#{actor}
+      <if test="includeMembers">OR EXISTS(SELECT 1 FROM sop_project_member m WHERE m.project_id=p.id AND m.user_id=#{actor} AND m.member_status=1)</if>)
+    </if>
+    <if test="projectId != null">AND d.managing_project_id=#{projectId}</if>
+    <if test="keyword != null">AND (LOCATE(#{keyword},d.code)>0 OR LOCATE(#{keyword},d.name)>0)</if>
+  </sql>
+  <sql id="fields">d.*,p.name AS managing_project_name,u.real_name AS owner_name,u.username AS owner_username,
+    (SELECT MAX(r.revision_no) FROM sop_revision r WHERE r.sop_id=d.id AND r.status=1 AND r.deleted_at IS NULL) AS latest_published_no,
+    (SELECT COUNT(*) FROM sop_revision r WHERE r.sop_id=d.id AND r.status=0 AND r.deleted_at IS NULL) AS draft_count</sql>
+  <select id="list" resultType="map">SELECT <include refid="fields"/> FROM sop_document d JOIN sop_project p ON p.id=d.managing_project_id JOIN sys_user u ON u.id=d.owner_user_id WHERE <include refid="scope"/> ORDER BY d.id DESC LIMIT #{limit} OFFSET #{offset}</select>
+  <select id="count" resultType="long">SELECT COUNT(*) FROM sop_document d JOIN sop_project p ON p.id=d.managing_project_id WHERE <include refid="scope"/></select>
+  <select id="document" resultType="map">SELECT <include refid="fields"/> FROM sop_document d JOIN sop_project p ON p.id=d.managing_project_id JOIN sys_user u ON u.id=d.owner_user_id WHERE d.id=#{id} AND d.deleted_at IS NULL AND p.deleted_at IS NULL</select>
+  <select id="lockDocument" resultType="map">SELECT * FROM sop_document WHERE id=#{id} AND deleted_at IS NULL FOR UPDATE</select>
+  <select id="projectOptions" resultType="map">SELECT p.id,p.code,p.name FROM sop_project p WHERE p.deleted_at IS NULL AND p.status IN (0,1)
+    <if test="!root">AND (p.owner_user_id=#{actor}<if test="includeMembers">OR EXISTS(SELECT 1 FROM sop_project_member m WHERE m.project_id=p.id AND m.user_id=#{actor} AND m.access_level=1 AND m.member_status=1)</if>)</if>
+    <if test="keyword != null">AND (LOCATE(#{keyword},p.name)>0 OR LOCATE(#{keyword},p.code)>0)</if> ORDER BY p.id DESC LIMIT 50
+  </select>
+  <select id="revisions" resultType="map">SELECT * FROM sop_revision WHERE sop_id=#{sopId} AND deleted_at IS NULL ORDER BY revision_no DESC</select>
+  <select id="revision" resultType="map">SELECT * FROM sop_revision WHERE sop_id=#{sopId} AND id=#{id} AND deleted_at IS NULL</select>
+  <select id="steps" resultType="map">SELECT * FROM sop_step WHERE revision_id=#{revisionId} ORDER BY sort_order,id</select>
+  <select id="step" resultType="map">SELECT * FROM sop_step WHERE revision_id=#{revisionId} AND id=#{id}</select>
+  <select id="attachments" resultType="map">SELECT a.id,a.file_id,a.caption,a.sort_order,f.original_name,f.mime_type,f.file_kind,f.byte_size FROM sop_step_attachment a JOIN sop_file f ON f.id=a.file_id AND f.deleted_at IS NULL WHERE a.step_id=#{stepId} ORDER BY a.sort_order,a.id</select>
+  <select id="rawAttachments" resultType="map">SELECT id,file_id,caption,sort_order FROM sop_step_attachment WHERE step_id=#{stepId} ORDER BY sort_order,id</select>
+  <select id="nextRevision" resultType="long">SELECT COALESCE(MAX(revision_no),0)+1 FROM sop_revision WHERE sop_id=#{sopId}</select>
+  <select id="drafts" resultType="long">SELECT COUNT(*) FROM sop_revision WHERE sop_id=#{sopId} AND status=0 AND deleted_at IS NULL</select>
+  <select id="published" resultType="long">SELECT COUNT(*) FROM sop_revision WHERE sop_id=#{sopId} AND status IN (1,2)</select>
+  <select id="bindings" resultType="long">SELECT (SELECT COUNT(*) FROM sop_project_binding WHERE sop_id=#{sopId})+(SELECT COUNT(*) FROM sop_subproject_binding WHERE sop_id=#{sopId})</select>
+  <select id="activeBindings" resultType="long">SELECT
+    (SELECT COUNT(*) FROM sop_project_binding b JOIN sop_project p ON p.id=b.project_id WHERE b.revision_id=#{revisionId} AND b.status=1 AND p.deleted_at IS NULL AND p.status IN (0,1))+
+    (SELECT COUNT(*) FROM sop_subproject_binding b JOIN sop_subproject s ON s.id=b.subproject_id JOIN sop_project p ON p.id=s.project_id WHERE b.revision_id=#{revisionId} AND b.status=1 AND s.deleted_at IS NULL AND p.deleted_at IS NULL AND s.status IN (0,1) AND p.status IN (0,1))</select>
+  <select id="projectReferences" resultType="long">SELECT
+    (SELECT COUNT(*) FROM sop_document WHERE managing_project_id=#{projectId} AND deleted_at IS NULL)+
+    (SELECT COUNT(*) FROM sop_project_binding WHERE project_id=#{projectId})+
+    (SELECT COUNT(*) FROM sop_subproject_binding b JOIN sop_subproject s ON s.id=b.subproject_id WHERE s.project_id=#{projectId})</select>
+  <select id="subprojectReferences" resultType="long">SELECT COUNT(*) FROM sop_subproject_binding WHERE subproject_id=#{subprojectId}</select>
+  <select id="ownedDocuments" resultType="long">SELECT COUNT(*) FROM sop_document WHERE managing_project_id=#{projectId} AND owner_user_id=#{userId} AND deleted_at IS NULL</select>
+  <insert id="insertDocument" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_document(code,name,managing_project_id,owner_user_id,created_by,updated_by) VALUES(#{code},#{name},#{projectId},#{owner},#{actor},#{actor})</insert>
+  <insert id="insertRevision" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_revision(sop_id,revision_no,title,applicable_scope,purpose,precautions,revision_note,created_by,updated_by) VALUES(#{sopId},#{number},#{title},#{scope},#{purpose},#{precautions},#{note},#{actor},#{actor})</insert>
+  <insert id="insertStep" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_step(revision_id,sort_order,title,instruction,precautions,check_requirements,expected_duration_seconds,detection_wait_seconds,voice_enabled,voice_text) VALUES(#{revisionId},#{position},#{title},#{instruction},#{precautions},#{checks},#{duration},#{wait},#{voice},#{voiceText})</insert>
+  <insert id="copyAttachment" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_step_attachment(step_id,file_id,caption,sort_order) VALUES(#{stepId},#{fileId},#{caption},#{position})</insert>
+  <update id="editDocument">UPDATE sop_document SET name=#{name},updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="owner">UPDATE sop_document SET owner_user_id=#{owner},updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="bumpDocument">UPDATE sop_document SET updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="editRevision">UPDATE sop_revision SET title=#{title},applicable_scope=#{scope},purpose=#{purpose},precautions=#{precautions},revision_note=#{note},updated_by=#{actor},version=version+1 WHERE id=#{id} AND sop_id=#{sopId} AND status=0 AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="bumpRevision">UPDATE sop_revision SET updated_by=#{actor},version=version+1 WHERE id=#{id} AND sop_id=#{sopId} AND status=0 AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="editStep">UPDATE sop_step SET title=#{title},instruction=#{instruction},precautions=#{precautions},check_requirements=#{checks},expected_duration_seconds=#{duration},detection_wait_seconds=#{wait},voice_enabled=#{voice},voice_text=#{voiceText},version=version+1 WHERE id=#{id} AND revision_id=#{revisionId} AND version=#{version}</update>
+  <delete id="deleteAttachments">DELETE FROM sop_step_attachment WHERE step_id=#{stepId}</delete>
+  <delete id="deleteStep">DELETE FROM sop_step WHERE id=#{id} AND revision_id=#{revisionId} AND version=#{version}</delete>
+  <update id="sortStep">UPDATE sop_step SET sort_order=#{position},version=version+1 WHERE id=#{id} AND revision_id=#{revisionId}</update>
+  <update id="publish">UPDATE sop_revision SET status=1,published_by=#{actor},published_at=#{now},updated_by=#{actor},version=version+1 WHERE id=#{id} AND sop_id=#{sopId} AND status=0 AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="retire">UPDATE sop_revision SET status=2,retired_by=#{actor},retired_at=#{now},updated_by=#{actor},version=version+1 WHERE id=#{id} AND sop_id=#{sopId} AND status=1 AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="discard">UPDATE sop_revision SET deleted_at=#{now},updated_by=#{actor},version=version+1 WHERE id=#{id} AND sop_id=#{sopId} AND status=0 AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="discardAll">UPDATE sop_revision SET deleted_at=#{now},updated_by=#{actor},version=version+1 WHERE sop_id=#{id} AND status=0 AND deleted_at IS NULL</update>
+  <update id="deleteDocument">UPDATE sop_document SET deleted_at=#{now},updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <insert id="insertFile" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_file(storage_key,original_name,mime_type,file_kind,byte_size,sha256,uploaded_by) VALUES(#{key},#{name},#{mime},0,#{size},#{sha},#{actor})</insert>
+  <select id="file" resultType="map">SELECT * FROM sop_file WHERE id=#{id} AND deleted_at IS NULL</select>
+  <select id="revisionFile" resultType="map">SELECT f.* FROM sop_file f WHERE f.id=#{fileId} AND f.deleted_at IS NULL AND EXISTS(SELECT 1 FROM sop_step_attachment a JOIN sop_step s ON s.id=a.step_id WHERE s.revision_id=#{revisionId} AND a.file_id=f.id)</select>
+  <delete id="deleteAttachment">DELETE FROM sop_step_attachment WHERE step_id=#{stepId} AND id=#{id}</delete>
+  <select id="publishedOptions" resultType="map">SELECT <include refid="fields"/> FROM sop_document d JOIN sop_project p ON p.id=d.managing_project_id JOIN sys_user u ON u.id=d.owner_user_id WHERE <include refid="scope"/> AND EXISTS(SELECT 1 FROM sop_revision r WHERE r.sop_id=d.id AND r.status=1 AND r.deleted_at IS NULL) ORDER BY d.id DESC LIMIT 50</select>
+</mapper>

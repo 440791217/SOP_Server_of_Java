@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.resource.mapper.ResourceMapper">
+<sql id="table"><choose><when test="kind == 'location'">sop_location</when><when test="kind == 'station'">sop_station</when><when test="kind == 'model'">sop_resource_model</when><otherwise>sop_resource_device</otherwise></choose></sql>
+<sql id="filter">d.deleted_at IS NULL <if test="keyword != null">AND (LOCATE(#{keyword},d.name)>0 OR LOCATE(#{keyword},d.code)>0 <if test="kind == 'station'">OR LOCATE(#{keyword},d.ip_address)>0</if><if test="kind == 'device'">OR EXISTS(SELECT 1 FROM sop_device_connection filter_c WHERE filter_c.device_id=d.id AND filter_c.deleted_at IS NULL AND LOCATE(#{keyword},filter_c.host)>0)</if>)</if><if test="status != null">AND d.status=#{status}</if></sql>
+<select id="list" resultType="map">SELECT d.* <if test="kind == 'station'">,l.name AS location_name</if> <if test="kind == 'device'">,m.name AS model_name,s.name AS station_name,c.transport,c.protocol,c.host AS connection_host,c.port AS connection_port,c.path AS connection_path,c.host_key,c.device_key,c.enabled AS connection_enabled</if> FROM <include refid="table"/> d <if test="kind == 'station'">LEFT JOIN sop_location l ON l.id=d.location_id</if> <if test="kind == 'device'">JOIN sop_resource_model m ON m.id=d.model_id LEFT JOIN sop_station s ON s.id=d.station_id LEFT JOIN sop_device_connection c ON c.device_id=d.id AND c.deleted_at IS NULL</if> WHERE <include refid="filter"/> ORDER BY d.id DESC LIMIT #{limit} OFFSET #{offset}</select>
+<select id="count" resultType="long">SELECT COUNT(*) FROM <include refid="table"/> d WHERE <include refid="filter"/></select>
+<select id="get" resultType="map">SELECT d.* <if test="kind == 'station'">,l.name AS location_name</if> FROM <include refid="table"/> d <if test="kind == 'station'">LEFT JOIN sop_location l ON l.id=d.location_id</if> WHERE d.id=#{id} AND d.deleted_at IS NULL</select>
+<select id="lock" resultType="map">SELECT * FROM <include refid="table"/> WHERE id=#{id} AND deleted_at IS NULL FOR UPDATE</select>
+<insert id="insert" useGeneratedKeys="true" keyProperty="id">INSERT INTO <include refid="table"/>(code,name,status,description,created_by,updated_by
+ <choose><when test="kind == 'station'">,location,location_id,ip_address,owner_user_id</when><when test="kind == 'model'">,type_code,model,specification,unit</when><when test="kind == 'device'">,model_id,station_id,serial_number,owner_user_id</when></choose>)
+ VALUES(#{code},#{name},#{status},#{description},#{actor},#{actor}
+ <choose><when test="kind == 'station'">,#{location},#{location_id},#{ip_address},#{owner_user_id}</when><when test="kind == 'model'">,#{type_code},#{model},#{specification},#{unit}</when><when test="kind == 'device'">,#{model_id},#{station_id},#{serial_number},#{owner_user_id}</when></choose>)</insert>
+<update id="update">UPDATE <include refid="table"/> SET name=#{name},status=#{status},description=#{description},updated_by=#{actor},updated_at=CURRENT_TIMESTAMP,version=version+1
+ <choose><when test="kind == 'station'">,location=#{location},location_id=#{location_id},ip_address=#{ip_address},owner_user_id=#{owner_user_id}</when><when test="kind == 'model'">,type_code=#{type_code},model=#{model},specification=#{specification},unit=#{unit}</when><when test="kind == 'device'">,model_id=#{model_id},station_id=#{station_id},serial_number=#{serial_number},owner_user_id=#{owner_user_id}</when></choose>
+ WHERE id=#{id} AND deleted_at IS NULL AND version=#{version}</update>
+<update id="delete">UPDATE <include refid="table"/> SET deleted_at=CURRENT_TIMESTAMP,updated_by=#{actor},updated_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+<select id="references" resultType="long"><choose>
+ <when test="kind == 'location'">SELECT COUNT(*) FROM sop_station WHERE location_id=#{id} AND deleted_at IS NULL</when>
+ <when test="kind == 'station'">SELECT (SELECT COUNT(*) FROM sop_resource_device WHERE station_id=#{id} AND deleted_at IS NULL)+(SELECT COUNT(*) FROM sop_task WHERE station_id=#{id} AND status!=2 AND deleted_at IS NULL)</when>
+ <when test="kind == 'model'">SELECT (SELECT COUNT(*) FROM sop_resource_device WHERE model_id=#{id} AND deleted_at IS NULL)+(SELECT COUNT(*) FROM sop_step_resource_requirement WHERE model_id=#{id})</when>
+ <otherwise>SELECT 0</otherwise></choose></select>
+<select id="connection" resultType="map">SELECT * FROM sop_device_connection WHERE device_id=#{id} AND deleted_at IS NULL</select>
+<delete id="removeConnection">DELETE FROM sop_device_connection WHERE device_id=#{id}</delete>
+<insert id="insertConnection">INSERT INTO sop_device_connection(device_id,transport,protocol,host,port,path,rtsp_url,host_key,device_key,enabled,created_by,updated_by) VALUES(#{id},#{transport},#{protocol},#{host},#{port},#{path},#{rtsp_url},#{host_key},#{device_key},#{enabled},#{actor},#{actor})</insert>
+<select id="requirements" resultType="map">SELECT * FROM sop_step_resource_requirement WHERE step_id=#{id} ORDER BY sort_order,id</select>
+<delete id="clearRequirements">DELETE FROM sop_step_resource_requirement WHERE step_id=#{id}</delete>
+<insert id="insertRequirement">INSERT INTO sop_step_resource_requirement(step_id,model_id,name,type_code,model,specification,unit,quantity,description,sort_order) VALUES(#{step_id},#{model_id},#{name},#{type_code},#{model},#{specification},#{unit},#{quantity},#{description},#{sort_order})</insert>
+<update id="environment">UPDATE sop_step SET workplace_requirements=#{text} WHERE id=#{id}</update>
+<sql id="taskFields">t.*,c.sop_id AS content_sop_id,(SELECT cr.id FROM sop_revision cr WHERE cr.sop_id=c.sop_id AND cr.status=0 AND cr.deleted_at IS NULL ORDER BY cr.revision_no DESC LIMIT 1) AS content_draft_id,s.name AS station_name,u.real_name AS owner_name,x.sop_id,x.revision_id,r.revision_no,d.name AS sop_name</sql>
+<sql id="taskJoins">LEFT JOIN sop_task_content c ON c.task_id=t.id LEFT JOIN sop_station s ON s.id=t.station_id JOIN sys_user u ON u.id=t.owner_user_id LEFT JOIN sop_task_standard x ON x.task_id=t.id AND x.active=1 LEFT JOIN sop_revision r ON r.id=x.revision_id LEFT JOIN sop_document d ON d.id=x.sop_id</sql>
+<select id="stationTasks" resultType="map">SELECT <include refid="taskFields"/>,p.id AS project_id,p.status AS project_status,sp.status AS subproject_status,p.name AS project_name,sp.name AS subproject_name FROM sop_task t <include refid="taskJoins"/> JOIN sop_subproject sp ON sp.id=t.subproject_id AND sp.deleted_at IS NULL JOIN sop_project p ON p.id=sp.project_id AND p.deleted_at IS NULL WHERE t.station_id=#{stationId} AND t.deleted_at IS NULL ORDER BY t.id DESC</select>
+<select id="tasks" resultType="map">SELECT <include refid="taskFields"/> FROM sop_task t <include refid="taskJoins"/> WHERE t.subproject_id=#{sid} AND t.deleted_at IS NULL ORDER BY t.sort_order,t.id</select>
+<select id="task" resultType="map">SELECT <include refid="taskFields"/> FROM sop_task t <include refid="taskJoins"/> WHERE t.id=#{id} AND t.deleted_at IS NULL</select>
+<select id="contentOwnerTask" resultType="map">SELECT t.status AS task_status,t.deleted_at AS task_deleted_at,s.status AS subproject_status,s.deleted_at AS subproject_deleted_at,s.project_id FROM sop_task_content c JOIN sop_task t ON t.id=c.task_id JOIN sop_subproject s ON s.id=t.subproject_id WHERE c.sop_id=#{id}</select>
+<select id="taskContent" resultType="map">SELECT * FROM sop_task_content WHERE task_id=#{id}</select>
+<insert id="insertTaskContent">INSERT INTO sop_task_content(task_id,sop_id,created_by) VALUES(#{id},#{sopId},#{actor})</insert>
+<update id="bumpTaskContent">UPDATE sop_task SET version=version+1,updated_by=#{actor},updated_at=CURRENT_TIMESTAMP WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+<select id="contentReferences" resultType="long">SELECT COUNT(*) FROM sop_task_content WHERE sop_id=#{id}</select>
+<insert id="insertTask" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_task(code,name,subproject_id,station_id,owner_user_id,sort_order,status,description,created_by,updated_by) VALUES(#{code},#{name},#{sid},#{station_id},#{owner_user_id},#{sort_order},#{status},#{description},#{actor},#{actor})</insert>
+<update id="updateTask">UPDATE sop_task SET name=#{name},station_id=#{station_id},owner_user_id=#{owner_user_id},sort_order=#{sort_order},status=#{status},description=#{description},updated_by=#{actor},updated_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+<select id="standard" resultType="map">SELECT * FROM sop_task_standard WHERE task_id=#{id} AND active=1</select>
+<update id="deactivate">UPDATE sop_task_standard SET active=0 WHERE task_id=#{id} AND active=1</update>
+<insert id="insertStandard">INSERT INTO sop_task_standard(task_id,sop_id,revision_id,created_by) VALUES(#{id},#{sop_id},#{revision_id},#{actor})</insert>
+<select id="taskReferences" resultType="long">SELECT COUNT(*) FROM sop_task WHERE subproject_id=#{sid}</select>
+<select id="ownerTasks" resultType="long">SELECT COUNT(*) FROM sop_task t JOIN sop_subproject s ON s.id=t.subproject_id WHERE s.project_id=#{pid} AND t.owner_user_id=#{uid} AND t.status!=2 AND t.deleted_at IS NULL</select>
+<select id="revisionTasks" resultType="long">SELECT COUNT(*) FROM sop_task_standard x JOIN sop_task t ON t.id=x.task_id JOIN sop_subproject s ON s.id=t.subproject_id JOIN sop_project p ON p.id=s.project_id WHERE x.revision_id=#{rid} AND x.active=1 AND t.status!=2 AND t.deleted_at IS NULL AND s.status IN(0,1) AND p.status IN(0,1)</select>
+<select id="devices" resultType="map">SELECT d.*,m.type_code,m.name AS model_name,m.model,m.specification,m.unit,m.status AS model_status FROM sop_resource_device d JOIN sop_resource_model m ON m.id=d.model_id WHERE d.station_id=#{id} AND d.deleted_at IS NULL ORDER BY d.id</select>
+</mapper>
+
+

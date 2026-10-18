@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.user.mapper.UserManagementMapper">
+    <sql id="columns">
+        u.id,u.username,u.real_name,u.card_number,u.team_id,t.name AS team_name,
+        u.phone,u.avatar_url,u.status,u.is_superuser,u.created_at,u.updated_at,u.version
+    </sql>
+    <sql id="filters">
+        WHERE u.deleted_at IS NULL
+        <if test="username != null">AND LOCATE(#{username},u.username) &gt; 0</if>
+        <if test="realName != null">AND LOCATE(#{realName},u.real_name) &gt; 0</if>
+        <if test="cardNumber != null">AND u.card_number=#{cardNumber}</if>
+        <if test="teamId != null">AND u.team_id=#{teamId}</if>
+        <if test="status != null">AND u.status=#{status}</if>
+    </sql>
+    <select id="list" resultType="org.jsut.modules.user.entity.ManagedUser">
+        SELECT <include refid="columns"/> FROM sys_user u LEFT JOIN sys_team t ON t.id=u.team_id
+        <include refid="filters"/> ORDER BY u.id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="count" resultType="long">
+        SELECT COUNT(*) FROM sys_user u <include refid="filters"/>
+    </select>
+    <select id="detail" resultType="org.jsut.modules.user.entity.ManagedUser">
+        SELECT <include refid="columns"/> FROM sys_user u LEFT JOIN sys_team t ON t.id=u.team_id
+        WHERE u.id=#{id} AND u.deleted_at IS NULL
+    </select>
+    <select id="userRoles" resultType="org.jsut.modules.user.dto.UserOption">
+        SELECT r.id AS id,r.name,r.code,r.status
+        FROM sys_role r JOIN sys_user_role ur ON ur.role_id=r.id WHERE ur.user_id=#{id} ORDER BY r.id
+    </select>
+    <select id="teamOptions" resultType="org.jsut.modules.user.dto.UserOption">
+        SELECT id,name,NULL AS code,status FROM sys_team ORDER BY id
+    </select>
+    <select id="roleOptions" resultType="org.jsut.modules.user.dto.UserOption">
+        SELECT id,name,code,status FROM sys_role WHERE status=1 ORDER BY id
+    </select>
+    <select id="team" resultType="org.jsut.modules.user.dto.UserOption">
+        SELECT id,name,NULL AS code,status FROM sys_team WHERE id=#{id}
+    </select>
+    <select id="role" resultType="org.jsut.modules.user.dto.UserOption">
+        SELECT id,name,code,status FROM sys_role WHERE id=#{id}
+    </select>
+    <select id="memberRole" resultType="long">SELECT id FROM sys_role WHERE code='member' AND status=1</select>
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO sys_user(username,password_hash,real_name,card_number,team_id,phone,avatar_url,
+            status,is_superuser,must_change_password,password_changed_at,created_at,updated_at)
+        VALUES(#{username},#{passwordHash},#{realName},#{cardNumber},#{teamId},#{phone},#{avatarUrl},
+            #{status},0,1,#{now},#{now},#{now})
+    </insert>
+    <update id="update">
+        UPDATE sys_user SET real_name=#{realName},card_number=#{cardNumber},team_id=#{teamId},
+            phone=#{phone},avatar_url=#{avatarUrl},updated_at=#{now},version=version+1
+        WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL AND is_superuser=0
+    </update>
+    <update id="status">
+        UPDATE sys_user SET status=#{status},updated_at=#{now},version=version+1
+        WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL AND is_superuser=0
+    </update>
+    <update id="softDelete">
+        UPDATE sys_user SET status=0,deleted_at=#{now},updated_at=#{now},version=version+1
+        WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL AND is_superuser=0
+    </update>
+    <update id="resetPassword">
+        UPDATE sys_user SET password_hash=#{passwordHash},must_change_password=1,
+            password_changed_at=#{now},updated_at=#{now},version=version+1
+        WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL AND is_superuser=0
+    </update>
+    <update id="bumpVersion">
+        UPDATE sys_user SET updated_at=#{now},version=version+1
+        WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL AND is_superuser=0
+    </update>
+    <delete id="removeRoles">DELETE FROM sys_user_role WHERE user_id=#{id}</delete>
+    <insert id="addRole">INSERT INTO sys_user_role(user_id,role_id) VALUES(#{id},#{roleId})</insert>
+</mapper>

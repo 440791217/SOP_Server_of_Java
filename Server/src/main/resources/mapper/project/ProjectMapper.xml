@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.project.mapper.ProjectMapper">
+  <sql id="projectFields">p.*, u.real_name AS owner_name, u.username AS owner_username,
+    (SELECT COUNT(*) FROM sop_subproject s WHERE s.project_id=p.id AND s.deleted_at IS NULL) AS subproject_count</sql>
+  <sql id="scope">p.deleted_at IS NULL
+    <if test="!root">AND (p.owner_user_id=#{actor} OR EXISTS (SELECT 1 FROM sop_project_member m WHERE m.project_id=p.id AND m.user_id=#{actor} AND m.member_status=1))</if>
+    <if test="ownerOnly != null and ownerOnly">AND p.owner_user_id=#{actor}</if>
+    <if test="keyword != null">AND (LOCATE(#{keyword},p.name)>0 OR LOCATE(#{keyword},p.code)>0)</if>
+    <if test="status != null">AND p.status=#{status}</if>
+  </sql>
+  <select id="list" resultType="map">SELECT <include refid="projectFields"/> FROM sop_project p JOIN sys_user u ON u.id=p.owner_user_id WHERE <include refid="scope"/> ORDER BY p.id DESC LIMIT #{limit} OFFSET #{offset}</select>
+  <select id="count" resultType="long">SELECT COUNT(*) FROM sop_project p WHERE <include refid="scope"/></select>
+  <select id="project" resultType="map">SELECT <include refid="projectFields"/> FROM sop_project p JOIN sys_user u ON u.id=p.owner_user_id WHERE p.id=#{id} AND p.deleted_at IS NULL</select>
+  <select id="lockProject" resultType="map">SELECT * FROM sop_project WHERE id=#{id} AND deleted_at IS NULL FOR UPDATE</select>
+  <sql id="subFields">s.*,u.real_name AS owner_name,u.username AS owner_username</sql>
+  <select id="sub" resultType="map">SELECT <include refid="subFields"/> FROM sop_subproject s JOIN sys_user u ON u.id=s.owner_user_id WHERE s.project_id=#{projectId} AND s.id=#{id} AND s.deleted_at IS NULL</select>
+  <select id="children" resultType="map">SELECT <include refid="subFields"/> FROM sop_subproject s JOIN sys_user u ON u.id=s.owner_user_id WHERE s.project_id=#{projectId} AND s.deleted_at IS NULL ORDER BY s.sort_order,s.id</select>
+  <select id="member" resultType="int">SELECT access_level FROM sop_project_member WHERE project_id=#{projectId} AND user_id=#{userId} AND member_status=1</select>
+  <select id="users" resultType="map">SELECT u.id,u.username,u.real_name FROM sys_user u WHERE u.deleted_at IS NULL AND u.status=1
+    <if test="projectId != null">AND EXISTS (SELECT 1 FROM sop_project_member m WHERE m.project_id=#{projectId} AND m.user_id=u.id AND m.access_level=1 AND m.member_status=1)</if>
+    <if test="keyword != null">AND (LOCATE(#{keyword},u.username)>0 OR LOCATE(#{keyword},u.real_name)>0)</if>
+    ORDER BY u.id LIMIT 50
+  </select>
+  <insert id="insertProject" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_project(code,name,customer_name,owner_user_id,description,created_by,updated_by) VALUES(#{code},#{name},#{customer},#{owner},#{description},#{actor},#{actor})</insert>
+  <insert id="insertSub" useGeneratedKeys="true" keyProperty="id">INSERT INTO sop_subproject(project_id,code,name,owner_user_id,description,sort_order,created_by,updated_by) VALUES(#{projectId},#{code},#{name},#{owner},#{description},#{position},#{actor},#{actor})</insert>
+  <insert id="addMember">INSERT INTO sop_project_member(project_id,user_id,access_level,created_by,updated_by) VALUES(#{projectId},#{userId},1,#{actor},#{actor})</insert>
+  <update id="updateProject">UPDATE sop_project SET name=#{name},customer_name=#{customer},description=#{description},updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="updateSub">UPDATE sop_subproject SET name=#{name},description=#{description},updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <!-- Snapshot must be assigned before status: MySQL evaluates single-table SET assignments left to right. -->
+  <update id="projectStatus">UPDATE sop_project SET archived_from_status=CASE WHEN #{status}=3 THEN status ELSE NULL END,status=#{status},updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="subStatus">UPDATE sop_subproject SET archived_from_status=CASE WHEN #{status}=3 THEN status ELSE NULL END,archived_with_project=0,status=#{status},updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="archiveChildren">UPDATE sop_subproject SET archived_from_status=status,archived_with_project=1,status=3,updated_by=#{actor},version=version+1 WHERE project_id=#{id} AND deleted_at IS NULL AND status&lt;&gt;3</update>
+  <update id="restoreProject">UPDATE sop_project SET status=COALESCE(archived_from_status,0),archived_from_status=NULL,updated_by=#{actor},version=version+1 WHERE id=#{id} AND status=3 AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="restoreChildren">UPDATE sop_subproject SET status=COALESCE(archived_from_status,0),archived_from_status=NULL,archived_with_project=0,updated_by=#{actor},version=version+1 WHERE project_id=#{id} AND status=3 AND archived_with_project=1 AND deleted_at IS NULL</update>
+  <update id="restoreSub">UPDATE sop_subproject SET status=COALESCE(archived_from_status,0),archived_from_status=NULL,archived_with_project=0,updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND id=#{id} AND status=3 AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="deleteProject">UPDATE sop_project SET deleted_at=#{deletedAt},updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="deleteSub">UPDATE sop_subproject SET deleted_at=#{deletedAt},updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="bump">UPDATE sop_project SET updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="sort">UPDATE sop_subproject SET sort_order=#{position},updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND id=#{id} AND deleted_at IS NULL</update>
+  <select id="memberRow" resultType="map">SELECT * FROM sop_project_member WHERE project_id=#{projectId} AND user_id=#{userId}</select>
+  <sql id="memberFilter">m.project_id=#{projectId}
+    <if test="status != null">AND m.member_status=#{status}</if>
+    <if test="keyword != null">AND (LOCATE(#{keyword},u.username)>0 OR LOCATE(#{keyword},u.real_name)>0)</if>
+  </sql>
+  <select id="members" resultType="map">SELECT m.*,u.username,u.real_name,u.is_superuser,u.status AS account_status,u.deleted_at AS user_deleted_at,
+    (SELECT COUNT(*) FROM sop_subproject s WHERE s.project_id=m.project_id AND s.owner_user_id=m.user_id AND s.deleted_at IS NULL) AS owned_subprojects
+    FROM sop_project_member m JOIN sys_user u ON u.id=m.user_id WHERE <include refid="memberFilter"/>
+    ORDER BY m.member_status DESC,m.user_id LIMIT #{limit} OFFSET #{offset}</select>
+  <select id="memberCount" resultType="long">SELECT COUNT(*) FROM sop_project_member m JOIN sys_user u ON u.id=m.user_id WHERE <include refid="memberFilter"/></select>
+  <select id="ownedChildren" resultType="long">SELECT COUNT(*) FROM sop_subproject WHERE project_id=#{projectId} AND owner_user_id=#{userId} AND deleted_at IS NULL</select>
+  <select id="memberCandidates" resultType="map">SELECT u.id,u.username,u.real_name FROM sys_user u WHERE u.status=1 AND u.deleted_at IS NULL
+    <if test="!includeMembers">AND NOT EXISTS (SELECT 1 FROM sop_project_member m WHERE m.project_id=#{projectId} AND m.user_id=u.id AND m.member_status=1)</if>
+    <if test="keyword != null">AND (LOCATE(#{keyword},u.username)>0 OR LOCATE(#{keyword},u.real_name)>0)</if>
+    ORDER BY u.id LIMIT 50</select>
+  <insert id="insertMember">INSERT INTO sop_project_member(project_id,user_id,access_level,created_by,updated_by) VALUES(#{projectId},#{userId},#{access},#{actor},#{actor})</insert>
+  <update id="updateMember">UPDATE sop_project_member SET access_level=#{access},member_status=#{memberStatus},removed_at=#{removedAt},updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND user_id=#{userId} AND version=#{version}</update>
+  <update id="projectOwner">UPDATE sop_project SET owner_user_id=#{owner},updated_by=#{actor},version=version+1 WHERE id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <update id="subOwner">UPDATE sop_subproject SET owner_user_id=#{owner},updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+  <insert id="insertActivity">INSERT INTO sop_project_activity(project_id,subproject_id,action,actor_user_id,actor_name,target_user_id,target_name,before_value,after_value,created_at) VALUES(#{projectId},#{subprojectId},#{action},#{actor},#{actorName},#{target},#{targetName},#{before},#{after},#{now})</insert>
+  <select id="activities" resultType="map">SELECT * FROM sop_project_activity WHERE project_id=#{projectId} ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}</select>
+  <select id="activityCount" resultType="long">SELECT COUNT(*) FROM sop_project_activity WHERE project_id=#{projectId}</select>
+  <update id="bumpSub">UPDATE sop_subproject SET updated_by=#{actor},version=version+1 WHERE project_id=#{projectId} AND id=#{id} AND version=#{version} AND deleted_at IS NULL</update>
+</mapper>

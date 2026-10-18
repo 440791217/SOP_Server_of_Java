@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.sop.mapper.SopBindingMapper">
+  <sql id="table"><choose><when test="subId != null">sop_subproject_binding</when><otherwise>sop_project_binding</otherwise></choose></sql>
+  <sql id="column"><choose><when test="subId != null">subproject_id</when><otherwise>project_id</otherwise></choose></sql>
+  <select id="list" resultType="map">SELECT b.*,d.code,r.title,r.revision_no,r.status AS revision_status,
+    (SELECT MAX(v.revision_no) FROM sop_revision v WHERE v.sop_id=b.sop_id AND v.status=1 AND v.deleted_at IS NULL) AS latest_published_no
+    FROM <include refid="table"/> b JOIN sop_document d ON d.id=b.sop_id JOIN sop_revision r ON r.id=b.revision_id
+    WHERE b.<include refid="column"/>=#{targetId} ORDER BY b.status DESC,b.sort_order,b.id</select>
+  <select id="get" resultType="map">SELECT * FROM <include refid="table"/> WHERE <include refid="column"/>=#{targetId} AND id=#{id}</select>
+  <select id="bySop" resultType="map">SELECT * FROM <include refid="table"/> WHERE <include refid="column"/>=#{targetId} AND sop_id=#{sopId}</select>
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">INSERT INTO <include refid="table"/>(<include refid="column"/>,sop_id,revision_id,sort_order,created_by,updated_by) VALUES(#{targetId},#{sopId},#{revisionId},#{position},#{actor},#{actor})</insert>
+  <update id="update">UPDATE <include refid="table"/> SET revision_id=#{revisionId},status=1,updated_by=#{actor},version=version+1 WHERE <include refid="column"/>=#{targetId} AND id=#{id} AND version=#{version}</update>
+  <update id="unbind">UPDATE <include refid="table"/> SET status=0,updated_by=#{actor},version=version+1 WHERE <include refid="column"/>=#{targetId} AND id=#{id} AND version=#{version} AND status=1</update>
+  <update id="sort">UPDATE <include refid="table"/> SET sort_order=#{position},updated_by=#{actor},version=version+1 WHERE <include refid="column"/>=#{targetId} AND id=#{id} AND status=1</update>
+</mapper>

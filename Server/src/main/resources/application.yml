@@ -1,19 +1,51 @@
-# ==========================================================
-# Spring Boot Server 配置
-# ==========================================================
-
 server:
-
-  # Spring Boot HTTP 服务端口。
-  #
-  # Vue 开发环境一般使用 5173，
-  # Java 后台使用 8080。
-  port: 8080
-
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
 
 spring:
-
+  mvc:
+    async:
+      request-timeout: 60000
   application:
+    name: sop-server
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/sop_dev?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8}
+    username: root
+    password: Aa8837006@
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 5000
+  sql:
+    init:
+      mode: never
 
-    # 当前 Spring Boot 应用名称。
-    name: SOP-Server
+mybatis:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 10
+
+sop:
+  bootstrap:
+    root:
+      enabled: false
+      password: 12345678
+  camera:
+    ffmpeg: ${SOP_CAMERA_FFMPEG:ffmpeg}
+    timeout-seconds: ${SOP_CAMERA_TIMEOUT_SECONDS:10}
+    max-processes: ${SOP_CAMERA_MAX_PROCESSES:4}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:9527,http://127.0.0.1:9527}
+
+springdoc:
+  packages-to-scan: org.jsut.modules,org.jsut.common
+  paths-to-match: /user/**,/system/**,/project/**,/sop/**
+  override-with-generic-response: false
+  api-docs:
+    enabled: ${API_DOCS_ENABLED:true}
+  swagger-ui:
+    enabled: ${API_DOCS_ENABLED:true}
+

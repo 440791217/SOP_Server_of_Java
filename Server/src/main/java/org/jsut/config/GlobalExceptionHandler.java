@@ -1,65 +1,58 @@
 package org.jsut.config;
 
+import jakarta.validation.ConstraintViolationException;
 import org.jsut.common.ApiResponse;
-import org.springframework.http.HttpStatus;
+import org.jsut.common.BusinessException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-/**
- * 全局异常处理器。
- *
- * 目的：
- *
- * Controller 和 Service 中不需要到处写 try/catch。
- *
- * Service 只需要正常抛异常，
- * 最后统一在这里转换成前端可以理解的 JSON。
- */
-@RestControllerAdvice
+@RestControllerAdvice(basePackages = "org.jsut")
 public class GlobalExceptionHandler {
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> uploadTooLarge(Exception exception){return error(413,"上传图片过大，单张不能超过5MiB");}
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    /**
-     * 参数错误。
-     *
-     * 例如：
-     *
-     * throw new IllegalArgumentException("message不能为空");
-     */
-    @ExceptionHandler(
-            IllegalArgumentException.class
-    )
-    public ApiResponse<Void> handleIllegalArgument(
-            IllegalArgumentException e
-    ) {
-
-        return ApiResponse.error(
-                400,
-                e.getMessage()
-        );
+    @ExceptionHandler(BusinessException.class)
+    public ResponseEntity<ApiResponse<Void>> business(BusinessException exception) {
+        return error(exception.getStatus().value(), exception.getMessage());
     }
 
-    /**
-     * 捕获其他没有单独处理的异常。
-     *
-     * 这是最后一道异常兜底。
-     */
-    @ExceptionHandler(
-            Exception.class
-    )
-    public ApiResponse<Void> handleException(
-            Exception e
-    ) {
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiResponse<Void>> validation(MethodArgumentNotValidException exception) {
+        var fieldError = exception.getBindingResult().getFieldError();
+        return error(400, fieldError == null ? "请求参数不正确" : fieldError.getDefaultMessage());
+    }
 
-        /*
-         * 当前开发阶段打印详细异常。
-         *
-         * 正式项目建议使用 Logger。
-         */
-        e.printStackTrace();
+    @ExceptionHandler({IllegalArgumentException.class, ConstraintViolationException.class,
+            HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
+    public ResponseEntity<ApiResponse<Void>> badRequest(Exception exception) {
+        return error(400, "请求参数不正确");
+    }
 
-        return ApiResponse.error(
-                HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                "服务器内部错误"
-        );
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> conflict(DataIntegrityViolationException exception) {
+        return error(409, "数据重复或关联约束冲突");
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiResponse<Void>> unexpected(Exception exception) {
+        if (exception instanceof ErrorResponse response) {
+            int status = response.getStatusCode().value();
+            return error(status, "请求失败");
+        }
+        log.error("请求处理失败", exception);
+        return error(500, "服务器内部错误");
+    }
+
+    private ResponseEntity<ApiResponse<Void>> error(int status, String message) {
+        return ResponseEntity.status(status).body(ApiResponse.error(status, message));
     }
 }

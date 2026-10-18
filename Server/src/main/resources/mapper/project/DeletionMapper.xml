@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.jsut.modules.project.mapper.DeletionMapper">
+ <select id="active" resultType="long">SELECT COUNT(*) FROM sop_execution WHERE project_id=#{pid} AND status IN(0,1)<if test="sid != null"> AND subproject_id=#{sid}</if><if test="tid != null"> AND task_id=#{tid}</if></select>
+ <update id="tasks">UPDATE sop_task SET deleted_at=CURRENT_TIMESTAMP(3),status=2,updated_at=CURRENT_TIMESTAMP(3),updated_by=#{actor},version=version+1 WHERE deleted_at IS NULL AND subproject_id IN(SELECT id FROM sop_subproject WHERE project_id=#{pid}<if test="sid != null"> AND id=#{sid}</if>)<if test="tid != null"> AND id=#{tid}</if></update>
+ <update id="children">UPDATE sop_subproject SET deleted_at=CURRENT_TIMESTAMP(3),updated_at=CURRENT_TIMESTAMP(3),updated_by=#{actor},version=version+1 WHERE project_id=#{pid} AND deleted_at IS NULL</update>
+ <insert id="audit">INSERT INTO sop_project_activity(project_id,subproject_id,action,actor_user_id,actor_name,target_user_id,target_name,before_value,after_value,created_at) VALUES(#{pid},#{sid},#{action},#{actor},#{actorName},#{actor},#{actorName},#{name},'逻辑删除，执行历史保留',CURRENT_TIMESTAMP(3))</insert>
+</mapper>
