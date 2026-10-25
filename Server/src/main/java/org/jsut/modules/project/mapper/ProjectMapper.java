@@ -5,6 +5,11 @@ import java.util.*;
 
 @Mapper
 public interface ProjectMapper {
+    List<Map<String,Object>> stations(@Param("projectId") long projectId,@Param("keyword") String keyword,@Param("available") boolean available);
+    long stationLinked(@Param("projectId") long projectId,@Param("stationId") long stationId);
+    long stationTasks(@Param("projectId") long projectId,@Param("stationId") long stationId);
+    int linkStation(@Param("projectId") long projectId,@Param("stationId") long stationId,@Param("actor") long actor);
+    int unlinkStation(@Param("projectId") long projectId,@Param("stationId") long stationId);
     List<Map<String,Object>> list(Map<String,Object> q);
     long count(Map<String,Object> q);
     Map<String,Object> project(@Param("id") long id);

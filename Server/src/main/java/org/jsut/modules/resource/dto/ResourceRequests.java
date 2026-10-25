@@ -7,7 +7,15 @@ public final class ResourceRequests {
  public record Item(@Size(max=64) String code,@NotBlank @Size(max=255) String name,@Size(max=255) String location,
   @Positive Long owner_user_id,@NotNull @Min(0) @Max(2) Integer status,@Size(max=2000) String description,
   @Size(max=64) String type_code,@Size(max=128) String model,@Size(max=1000) String specification,@Size(max=32) String unit,
-  @Positive Long model_id,@Positive Long station_id,@Size(max=128) String serial_number,@Min(0) Integer version,@Positive Long location_id,@Size(max=45) String ip_address,@Valid ConnectionSettings connection){}
+  @Positive Long model_id,@Positive Long station_id,@Size(max=128) String serial_number,@Min(0) Integer version,@Positive Long location_id,@Size(max=45) String ip_address,@Valid ConnectionSettings connection,@Valid FrameRates frame_rates){}
+ public record FrameRates(
+     @Min(0) @Max(120) Integer refresh_fps,
+     @Min(1) @Max(60) Integer detect_fps,
+     @Min(0) Integer version,
+     @Min(1) @Max(30) Integer video_window_seconds,
+     @Min(1) @Max(60) Integer detection_window_seconds,
+     @Min(1) @Max(5) Integer update_interval_seconds
+ ) {}
  public record Version(@NotNull @Min(0) Integer version){}
  public record ConnectionSettings(@NotBlank String transport,@NotBlank String protocol,@Size(max=255) String host,@Min(1) @Max(65535) Integer port,
   @Size(max=1000) String path,@Size(max=128) String host_key,@Size(max=255) String device_key,@NotNull Boolean enabled,@Size(max=1300) String rtsp_url){}

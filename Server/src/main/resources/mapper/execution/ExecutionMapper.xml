@@ -29,4 +29,13 @@
  <update id="confirm">UPDATE sop_execution_step SET confirmed_at=CURRENT_TIMESTAMP(3),confirmed_by=#{actor} WHERE execution_id=#{id} AND position=#{position} AND confirmed_at IS NULL</update>
  <update id="update">UPDATE sop_execution SET status=#{status},active_station_id=#{active_station_id},version=version+1,updated_at=CURRENT_TIMESTAMP(3)<if test="ended">,ended_at=CURRENT_TIMESTAMP(3)</if> WHERE id=#{id} AND version=#{version}</update>
  <insert id="event">INSERT INTO sop_execution_event(execution_id,action,reason,actor_id) VALUES(#{id},#{action},#{reason},#{actor})</insert>
+ <resultMap id="evidenceFile" type="map" autoMapping="true"><result column="detection_result" property="detection_result" javaType="java.lang.String" jdbcType="LONGVARCHAR" typeHandler="org.apache.ibatis.type.StringTypeHandler"/></resultMap>
+ <select id="evidence" resultMap="evidenceFile">SELECT * FROM sop_execution_evidence WHERE execution_id=#{id} ORDER BY position</select>
+ <select id="stepEvidence" resultMap="evidenceFile">SELECT * FROM sop_execution_evidence WHERE execution_id=#{id} AND position=#{position}</select>
+ <insert id="insertEvidence">INSERT INTO sop_execution_evidence(execution_id,position,request_key,storage_key,original_name,mime_type,byte_size,sha256,camera_id,model_id,frame_id,image_width,image_height,captured_at,automatic,detection_result) VALUES(#{execution_id},#{position},#{request_key},#{storage_key},#{original_name},#{mime_type},#{byte_size},#{sha256},#{camera_id},#{model_id},#{frame_id},#{image_width},#{image_height},#{captured_at},#{automatic},#{detection_result})</insert>
+ <select id="clocks" resultType="map">SELECT * FROM sop_execution_step_clock WHERE execution_id=#{id} ORDER BY position</select>
+ <select id="clock" resultType="map">SELECT * FROM sop_execution_step_clock WHERE execution_id=#{id} AND position=#{position}</select>
+ <insert id="insertClock">INSERT INTO sop_execution_step_clock(execution_id,position,elapsed_ms,remaining_ms,session_key,heartbeat_sequence,heartbeat_at,active) VALUES(#{id},#{position},0,#{remaining},#{session},0,CURRENT_TIMESTAMP(3),TRUE)</insert>
+ <update id="updateClock">UPDATE sop_execution_step_clock SET elapsed_ms=elapsed_ms+#{delta},remaining_ms=CASE WHEN remaining_ms IS NULL THEN NULL ELSE remaining_ms-#{delta} END,session_key=#{session},heartbeat_sequence=#{sequence},heartbeat_at=CURRENT_TIMESTAMP(3),active=#{active} WHERE execution_id=#{id} AND position=#{position}</update>
+ <update id="stopClocks">UPDATE sop_execution_step_clock SET active=FALSE WHERE execution_id=#{id}</update>
 </mapper>

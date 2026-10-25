@@ -35,7 +35,8 @@ public final class SopRequests {
                          @NotNull @Min(1) @Max(8192) Integer image_width,@NotNull @Min(1) @Max(8192) Integer image_height,
                          @NotNull @Size(max=100) List<java.util.Map<String,Object>> guide_items,
                          @NotNull @Size(max=100) List<java.util.Map<String,Object>> detection_regions) {}
-    public record Authoring(@NotNull @Valid StepEdit step,@NotNull @Size(max=20) List<@NotNull @Valid Visual> visuals,@Valid RevisionEdit revision,@Valid org.jsut.modules.resource.dto.ResourceRequests.Requirements resources) {}
+    public record Detection(@NotNull Boolean enabled,@Positive Long camera_id,@Positive Long attachment_id,@NotNull Boolean confirmed) {}
+    public record Authoring(@NotNull @Valid StepEdit step,@Size(max=20) List<@NotNull @Valid Visual> visuals,@Valid RevisionEdit revision,@Valid org.jsut.modules.resource.dto.ResourceRequests.Requirements resources,@Valid Detection detection,@Valid Visual visual) {}
     public record StepDelete(@NotNull @Min(0) Integer version,@NotNull @Min(0) Integer revision_version) {}
     public record Sort(@NotNull @Size(max=1000) List<@NotNull @Positive Long> ids,
                        @Schema(description="所属草稿version") @NotNull @Min(0) Integer version) {}

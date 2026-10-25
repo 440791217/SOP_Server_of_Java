@@ -15,16 +15,21 @@ import java.util.*;
 @Service
 public class SopImageStorage {
     public static final long MAX_BYTES=5L*1024*1024;
-    private final Path root;
-    public SopImageStorage(@Value("${sop.storage.directory:./data/sop-files}") String directory){root=Path.of(directory).toAbsolutePath().normalize();}
+    private final Path root,legacy;
+    public SopImageStorage(@Value("${sop.storage.data-root:./sop-data}") String directory,@Value("${sop.storage.directory:./data/sop-files}") String legacyDirectory){root=Path.of(directory).toAbsolutePath().normalize();legacy=Path.of(legacyDirectory).toAbsolutePath().normalize();}
     public record Stored(String key,String name,String mime,byte[] bytes,byte[] sha) {}
     public Stored save(MultipartFile file){
+        return save(file,null,"");
+    }
+    public Stored save(MultipartFile file,String directory,String prefix){
         if(file==null||file.isEmpty())throw bad("请选择图片");if(file.getSize()>MAX_BYTES)throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE,"图片不能超过5MiB");
         try{
             byte[] bytes;try(var stream=file.getInputStream()){bytes=stream.readNBytes((int)MAX_BYTES+1);}if(bytes.length>MAX_BYTES)throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE,"图片不能超过5MiB");
-            String format=validate(bytes);String key=UUID.randomUUID().toString().replace("-","")+(format.equals("png")?".png":".jpg");
+            String format=validate(bytes);String leaf=prefix+UUID.randomUUID().toString().replace("-","")+(format.equals("png")?".png":".jpg");
+            String key=directory==null?leaf:directory+"/"+leaf;
             String name=file.getOriginalFilename();name=name==null?key:name.replace('\\','/');name=name.substring(name.lastIndexOf('/')+1).replaceAll("[\\p{Cntrl}]","");if(name.isBlank())name=key;if(name.length()>255)name=name.substring(0,255);
-            Files.createDirectories(root);Files.write(path(key),bytes,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE);
+            Path target=path(key);Files.createDirectories(target.getParent());target=path(key);
+            Files.write(target,bytes,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);
             return new Stored(key,name,format.equals("png")?"image/png":"image/jpeg",bytes,digest(bytes));
         }catch(IOException e){throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR,"图片保存失败，请重试");}
     }
@@ -42,7 +47,14 @@ public class SopImageStorage {
     }
     public void validateStored(Map<String,Object> file){if(file==null||((Number)file.get("file_kind")).intValue()!=0)throw bad("图片不存在或不受支持");read(file);}
     public void rollbackDelete(String key){try{Files.deleteIfExists(path(key));}catch(IOException ignored){/* Orphan can be reconciled against sop_file; never delete referenced objects. */}}
-    private Path path(String key){if(key==null||!key.matches("[0-9a-f]{32}\\.(png|jpg)"))throw missing();Path p=root.resolve(key).normalize();if(!p.startsWith(root))throw missing();return p;}
+    private Path path(String key){
+        if(key==null||key.length()>1024)throw missing();
+        boolean old=key.matches("[0-9a-f]{32}\\.(png|jpg)");
+        if(!old&&(!key.startsWith("projects/")||!key.matches("[A-Za-z0-9_/-]+\\.(png|jpg)")))throw missing();
+        Path base=old?legacy:root;Path target=base.resolve(key).normalize();if(!target.startsWith(base))throw missing();
+        for(Path p=target;p!=null;p=p.getParent())if(Files.isSymbolicLink(p))throw missing();
+        return target;
+    }
     private byte[] digest(byte[] bytes){try{return MessageDigest.getInstance("SHA-256").digest(bytes);}catch(NoSuchAlgorithmException e){throw new IllegalStateException(e);}}
     private BusinessException bad(String m){return new BusinessException(HttpStatus.BAD_REQUEST,m);}
     private BusinessException missing(){return new BusinessException(HttpStatus.NOT_FOUND,"图片不存在或存储校验失败");}

@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="org.jsut.modules.sop.mapper.SopMapper">
+  <select id="detection" resultType="map">SELECT * FROM sop_step_detection WHERE step_id=#{stepId}</select>
+  <delete id="clearDetection">DELETE FROM sop_step_detection WHERE step_id=#{stepId}</delete>
+  <insert id="saveDetection">INSERT INTO sop_step_detection(step_id,enabled,camera_id,attachment_id,confirmed) VALUES(#{stepId},#{enabled},#{camera_id},#{attachment_id},#{confirmed}) ON DUPLICATE KEY UPDATE enabled=#{enabled},camera_id=#{camera_id},attachment_id=#{attachment_id},confirmed=#{confirmed}</insert>
+  <select id="detectionCamera" resultType="map">SELECT d.id,d.station_id FROM sop_resource_device d JOIN sop_resource_model m ON m.id=d.model_id JOIN sop_station s ON s.id=d.station_id WHERE d.id=#{id} AND d.deleted_at IS NULL AND d.status=0 AND m.type_code='camera' AND m.status=0 AND s.deleted_at IS NULL AND s.status=0</select>
+  <select id="wrongCameraStation" resultType="long">SELECT COUNT(*) FROM sop_task t JOIN sop_task_content c ON c.task_id=t.id WHERE c.sop_id=#{sopId} AND t.deleted_at IS NULL AND t.status!=2 AND (t.station_id IS NULL OR t.station_id!=#{stationId})</select>
   <sql id="scope">d.deleted_at IS NULL AND p.deleted_at IS NULL
     <if test="!root">AND (p.owner_user_id=#{actor}
       <if test="includeMembers">OR EXISTS(SELECT 1 FROM sop_project_member m WHERE m.project_id=p.id AND m.user_id=#{actor} AND m.member_status=1)</if>)

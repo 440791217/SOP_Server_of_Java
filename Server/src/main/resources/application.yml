@@ -29,6 +29,9 @@ mybatis:
     default-statement-timeout: 10
 
 sop:
+  storage:
+    data-root: ${SOP_DATA_ROOT:D:/projects/sop-data}
+    directory: ${SOP_LEGACY_IMAGE_DIRECTORY:D:/projects/data/sop-files}
   bootstrap:
     root:
       enabled: false

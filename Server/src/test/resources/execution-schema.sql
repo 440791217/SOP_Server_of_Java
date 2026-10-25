@@ -41,3 +41,22 @@ CREATE TABLE IF NOT EXISTS sop_execution_event (
  FOREIGN KEY(execution_id) REFERENCES sop_execution(id), FOREIGN KEY(actor_id) REFERENCES sys_user(id),
  INDEX ix_execution_event(execution_id,id)
 );
+CREATE TABLE IF NOT EXISTS sop_execution_evidence (
+ execution_id BIGINT NOT NULL, position INT NOT NULL, request_key VARCHAR(64) NOT NULL,
+ storage_key VARCHAR(1024) NOT NULL, original_name VARCHAR(255) NOT NULL, mime_type VARCHAR(32) NOT NULL,
+ byte_size BIGINT NOT NULL, sha256 BINARY(32) NOT NULL, camera_id BIGINT NOT NULL,
+ model_id VARCHAR(128), frame_id VARCHAR(128), image_width INT NOT NULL, image_height INT NOT NULL,
+ captured_at TIMESTAMP(3) NOT NULL, created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ automatic BOOLEAN NOT NULL, detection_result CLOB,
+ PRIMARY KEY(execution_id,position), UNIQUE(execution_id,request_key),
+ FOREIGN KEY(execution_id,position) REFERENCES sop_execution_step(execution_id,position)
+);
+
+CREATE TABLE IF NOT EXISTS sop_execution_step_clock (
+ execution_id BIGINT NOT NULL, position INT NOT NULL,
+ elapsed_ms BIGINT NOT NULL DEFAULT 0, remaining_ms BIGINT NULL,
+ session_key VARCHAR(64) NOT NULL, heartbeat_sequence BIGINT NOT NULL DEFAULT 0,
+ heartbeat_at DATETIME(3) NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
+ PRIMARY KEY(execution_id,position),
+ FOREIGN KEY(execution_id,position) REFERENCES sop_execution_step(execution_id,position)
+);

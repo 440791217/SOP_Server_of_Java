@@ -40,10 +40,10 @@ class SopIntegrationTest {
  }
  static final Path FILES;
  static { try { FILES=Files.createTempDirectory("sop-media-test-").toAbsolutePath().normalize(); } catch(IOException e){throw new ExceptionInInitializerError(e);} }
- @DynamicPropertySource static void storage(DynamicPropertyRegistry r){r.add("sop.storage.directory",()->FILES.toString());}
+ @DynamicPropertySource static void storage(DynamicPropertyRegistry r){r.add("sop.storage.directory",()->FILES.toString());r.add("sop.storage.data-root",()->FILES.resolve("data").toString());}
  @AfterAll static void cleanup()throws IOException{
-  // Only this test's freshly created flat private directory; never follow links or recurse.
-  try(var files=Files.list(FILES)){for(Path p:files.toList()){assertEquals(FILES,p.toAbsolutePath().normalize().getParent());Files.delete(p);}}Files.delete(FILES);
+  // Only this test's freshly created directory; Files.walk does not follow symbolic links.
+  try(var files=Files.walk(FILES)){for(Path p:files.sorted(java.util.Comparator.reverseOrder()).toList()){assertTrue(p.toAbsolutePath().normalize().startsWith(FILES));Files.delete(p);}}
  }
  @Autowired JdbcTemplate jdbc;
  @Autowired AuthService auth;
@@ -54,7 +54,8 @@ class SopIntegrationTest {
  String root,owner,outsider,author;
  final HttpClient http=HttpClient.newHttpClient();
  @BeforeEach void seed(){
-  for(String t:List.of("sop_task_standard","sop_task","sop_step_resource_requirement","sop_device_connection","sop_resource_device","sop_resource_model","sop_station","sop_location","sop_step_visual","sop_project_binding","sop_subproject_binding","sop_step_attachment","sop_file","sop_step","sop_revision","sop_document","sop_project_activity","sop_subproject","sop_project_member","sop_project","sys_user_session","sys_user_role","sys_role_permission","sys_user","sys_team","sys_role","sys_permission"))jdbc.execute("DELETE FROM "+t);
+  jdbc.update("DELETE FROM sop_camera_config WHERE device_id IS NOT NULL");
+  for(String t:List.of("sop_step_detection","sop_task_standard","sop_task","sop_step_resource_requirement","sop_device_connection","sop_resource_device","sop_resource_model","sop_project_station","sop_station","sop_location","sop_step_visual","sop_project_binding","sop_subproject_binding","sop_step_attachment","sop_file","sop_step","sop_revision","sop_document","sop_project_activity","sop_subproject","sop_project_member","sop_project","sys_user_session","sys_user_role","sys_role_permission","sys_user","sys_team","sys_role","sys_permission"))jdbc.execute("DELETE FROM "+t);
   jdbc.update("INSERT INTO sys_user(id,username,real_name,status,is_superuser) VALUES(1,'root','Root',0,1)");initializer.initialize("Root123!");
   String hash=encoder.encode("User123!");
   for(int i=2;i<=4;i++)jdbc.update("INSERT INTO sys_user(id,username,real_name,password_hash,status,must_change_password) VALUES(?,?,?,?,1,0)",i,"user"+i,"用户"+i,hash);
@@ -227,7 +228,7 @@ class SopIntegrationTest {
  byte[] png()throws IOException{var out=new ByteArrayOutputStream();ImageIO.write(new BufferedImage(3,3,BufferedImage.TYPE_INT_RGB),"png",out);return out.toByteArray();}
  @Test void detectionParametersAreValidatedByTypeWithoutClaimingInference()throws Exception{
   var created=create("DETECTION-CONFIG",2,owner);String id=value(created,"$.data.id"),rid=value(created,"$.data.draft.id"),step=value(add(id,rid,"检查",0),"$.data.steps[0].id");String aid=value(upload(id,rid,step,1,png(),owner),"$.data.steps[0].attachments[0].id");String url=path(id,rid)+"/step/"+step+"/authoring";
-  var region=guide();region.put("enabled",true);region.put("detect_type","count");region.put("class_name","标签");region.put("confidence",75);region.put("expected_count",0);
+  var region=guide();region.put("id","region1");region.put("enabled",true);region.put("detect_type","count");region.put("class_name","标签");region.put("confidence",75);region.put("expected_count",0);
   var v=new HashMap<>(visual(aid,guide()));v.put("guide_items",List.of());v.put("detection_regions",List.of(region));
   assertEquals(400,send("PUT",url,Map.of("step",authorStep(0,2),"visuals",List.of(v)),owner).statusCode());region.put("expected_count",2);region.put("confidence",101);
   assertEquals(400,send("PUT",url,Map.of("step",authorStep(0,2),"visuals",List.of(v)),owner).statusCode());region.put("confidence",75);region.put("detect_type","ocr");region.put("expected_text","产品合格");
@@ -255,6 +256,59 @@ class SopIntegrationTest {
   assertEquals("操作位置",value(preview(id,rid),"$.data.steps[0].attachments[0].visual.guide_items[0].name"));
   assertEquals(200,send("DELETE",path(id,next)+"/step/"+ns+"/image/"+na,Map.of("version",1),owner).statusCode());
   assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM sop_step_visual",Integer.class));
+ }
+ @Test void stepDetectionPersistsValidatesAndRemapsBaselineWhenCopied()throws Exception{
+  jdbc.update("INSERT INTO sop_station(id,code,name,created_by,updated_by) VALUES(901,'DETECT-ST','检测工位',1,1)");
+  jdbc.update("INSERT INTO sop_resource_model(id,code,name,type_code,unit,created_by,updated_by) VALUES(901,'DETECT-M','摄像头','camera','台',1,1)");
+  jdbc.update("INSERT INTO sop_resource_device(id,code,name,model_id,station_id,created_by,updated_by) VALUES(901,'DETECT-C','摄像头A',901,901,1,1)");
+  var created=create("DETECT",2,owner);String id=value(created,"$.data.id"),rid=value(created,"$.data.draft.id"),sid=value(add(id,rid,"检测杯子",0),"$.data.steps[0].id");
+  String aid=value(upload(id,rid,sid,1,png(),owner),"$.data.steps[0].attachments[0].id");
+  var region=guide();region.put("id","region1");region.put("enabled",true);region.put("detect_type","object");region.put("class_name","cup");region.put("confidence",60);
+  var visual=new HashMap<>(visual(aid,guide()));visual.put("detection_regions",List.of(region));
+  var config=new HashMap<String,Object>();config.put("enabled",true);config.put("camera_id",901);config.put("attachment_id",aid);config.put("confirmed",false);
+  String url=path(id,rid)+"/step/"+sid+"/authoring";
+  assertEquals(200,send("PUT",url,Map.of("step",authorStep(0,2),"visual",visual,"detection",config),owner).statusCode());
+  assertEquals(aid,value(preview(id,rid),"$.data.steps[0].detection.attachment_id"));
+  assertEquals(400,publish(id,rid,3,owner).statusCode());
+  config.put("confirmed",true);config.put("attachment_id",999999);
+  assertEquals(400,send("PUT",url,Map.of("step",authorStep(1,3),"visual",visual,"detection",config),owner).statusCode());
+  config.put("attachment_id",aid);
+  assertEquals(200,send("PUT",url,Map.of("step",authorStep(1,3),"visual",visual,"detection",config),owner).statusCode());
+  assertEquals(200,publish(id,rid,4,owner).statusCode());
+  var copy=send("POST","/sop/"+id+"/draft",Map.of("source_revision_id",rid,"version",5),owner);
+  assertEquals(200,copy.statusCode());
+  String copiedAid=value(copy,"$.data.steps[0].attachments[0].id");
+  assertNotEquals(aid,copiedAid);assertEquals(copiedAid,value(copy,"$.data.steps[0].detection.attachment_id"));
+  assertEquals("901",value(copy,"$.data.steps[0].detection.camera_id"));
+  assertEquals(aid,value(preview(id,rid),"$.data.steps[0].detection.attachment_id"));
+  String next=value(copy,"$.data.id"),nextStep=value(copy,"$.data.steps[0].id");
+  var removed=send("DELETE",path(id,next)+"/step/"+nextStep+"/image/"+copiedAid,Map.of("version",0),owner);
+  assertEquals(200,removed.statusCode());assertEquals(false,value(removed,"$.data.steps[0].detection.enabled"));
+  assertNull(((Map<?,?>)value(removed,"$.data.steps[0].detection")).get("attachment_id"));
+ }
+ @Test void cameraPhotoAtomicallyBindsAndReplacesTheCurrentImage()throws Exception{
+  jdbc.update("INSERT INTO sop_station(id,code,name,created_by,updated_by) VALUES(902,'PHOTO-ST','拍照工位',1,1)");
+  jdbc.update("INSERT INTO sop_resource_model(id,code,name,type_code,unit,created_by,updated_by) VALUES(902,'PHOTO-M','摄像头','camera','台',1,1)");
+  jdbc.update("INSERT INTO sop_resource_device(id,code,name,model_id,station_id,created_by,updated_by) VALUES(902,'PHOTO-C','摄像头B',902,902,1,1)");
+  var created=create("PHOTO",2,owner);String id=value(created,"$.data.id"),rid=value(created,"$.data.draft.id"),sid=value(add(id,rid,"检测",0),"$.data.steps[0].id");
+  var first=uploadCamera(id,rid,sid,1,png(),owner,902L,null);assertEquals(200,first.statusCode());
+  String aid=value(first,"$.data.steps[0].attachments[0].id");
+  assertEquals("902",value(first,"$.data.steps[0].detection.camera_id"));assertEquals(aid,value(first,"$.data.steps[0].detection.attachment_id"));assertEquals(true,value(first,"$.data.steps[0].detection.confirmed"));
+  var rejected=uploadCamera(id,rid,sid,2,png(),owner,9999L,aid);assertEquals(400,rejected.statusCode());assertEquals(aid,value(preview(id,rid),"$.data.steps[0].attachments[0].id"));
+  var legacy=create("LEGACY-IMAGE",2,owner);String legacyId=value(legacy,"$.data.id"),legacyRevision=value(legacy,"$.data.draft.id"),legacyStep=value(add(legacyId,legacyRevision,"旧图",0),"$.data.steps[0].id");
+  String legacyFile=value(upload(legacyId,legacyRevision,legacyStep,1,png(),owner),"$.data.steps[0].attachments[0].file_id");
+  jdbc.update("INSERT INTO sop_step_attachment(step_id,file_id,sort_order) VALUES(?,?,99)",sid,legacyFile);
+  assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM sop_step_attachment WHERE step_id=?",Integer.class,sid));
+  var second=uploadCamera(id,rid,sid,2,png(),owner,902L,aid);assertEquals(200,second.statusCode());
+  assertEquals(1,((List<?>)value(second,"$.data.steps[0].attachments")).size());
+  String next=value(second,"$.data.steps[0].attachments[0].id");assertNotEquals(aid,next);assertEquals(next,value(second,"$.data.steps[0].detection.attachment_id"));
+  assertEquals(next,value(second,"$.data.steps[0].image.id"));
+  jdbc.update("INSERT INTO sop_step_attachment(step_id,file_id,sort_order) VALUES(?,?,99)",sid,legacyFile);
+  var removed=send("DELETE",path(id,rid)+"/step/"+sid+"/image/"+next,Map.of("version",3),owner);
+  assertEquals(200,removed.statusCode());assertTrue(((List<?>)value(removed,"$.data.steps[0].attachments")).isEmpty());
+  assertNull(((Map<?,?>)value(removed,"$.data.steps[0]")).get("image"));
+  assertEquals(false,value(removed,"$.data.steps[0].detection.enabled"));
+
  }
  @Test void authoringRejectsInvalidGeometryWrongImageScopeAndRollsBackWholeUnit()throws Exception{
   var created=create("VISUAL-INVALID",2,owner);String id=value(created,"$.data.id"),rid=value(created,"$.data.draft.id"),step=value(add(id,rid,"原步骤",0),"$.data.steps[0].id");String aid=value(upload(id,rid,step,1,png(),owner),"$.data.steps[0].attachments[0].id");String url=path(id,rid)+"/step/"+step+"/authoring";
@@ -288,7 +342,12 @@ class SopIntegrationTest {
   }finally{pool.shutdownNow();}
  }
  HttpResponse<String> upload(String id,String rid,String step,int version,byte[] bytes,String token)throws Exception{
+  return uploadCamera(id,rid,step,version,bytes,token,null,null);
+ }
+ HttpResponse<String> uploadCamera(String id,String rid,String step,int version,byte[] bytes,String token,Long camera,String replaced)throws Exception{
   String boundary="sop-test-boundary";var out=new ByteArrayOutputStream();
+  if(camera!=null)out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"camera_id\"\r\n\r\n"+camera+"\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+  if(replaced!=null)out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"replace_attachment_id\"\r\n\r\n"+replaced+"\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
   out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"version\"\r\n\r\n"+version+"\r\n--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"step.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));out.write(bytes);out.write(("\r\n--"+boundary+"--\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
   var b=HttpRequest.newBuilder(URI.create("http://localhost:"+port+path(id,rid)+"/step/"+step+"/image")).header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray()));if(token!=null)b.header("Authorization","Bearer "+token);return http.send(b.build(),HttpResponse.BodyHandlers.ofString());
  }

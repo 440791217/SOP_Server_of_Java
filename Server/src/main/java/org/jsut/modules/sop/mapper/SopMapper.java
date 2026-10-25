@@ -5,6 +5,11 @@ import java.util.*;
 
 @Mapper
 public interface SopMapper {
+    Map<String,Object> detection(@Param("stepId") long stepId);
+    int clearDetection(@Param("stepId") long stepId);
+    int saveDetection(Map<String,Object> data);
+    Map<String,Object> detectionCamera(@Param("id") long id);
+    long wrongCameraStation(@Param("sopId") long sopId,@Param("stationId") long stationId);
     List<Map<String,Object>> list(Map<String,Object> q);
     long count(Map<String,Object> q);
     List<Map<String,Object>> projectOptions(Map<String,Object> q);

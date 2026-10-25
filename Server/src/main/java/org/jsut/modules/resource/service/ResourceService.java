@@ -13,13 +13,14 @@ import static org.jsut.modules.resource.service.ResourceSupport.*;
 @Service @Transactional(isolation=Isolation.READ_COMMITTED)
 public class ResourceService {
  private final org.jsut.modules.project.mapper.ProjectMapper projects;
+ @org.springframework.beans.factory.annotation.Autowired private CameraConfigService cameraConfigs;
  private final ResourceMapper db;private final AuthService auth;private final AuthMapper users;
  public ResourceService(ResourceMapper db,AuthService auth,AuthMapper users,org.jsut.modules.project.mapper.ProjectMapper projects){this.projects=projects;this.db=db;this.auth=auth;this.users=users;}
  private UserInfo actor(String token,boolean write){var a=auth.authenticate(token);if(a.must_change_password()||!has(a,write?"resource:manage":"resource:read"))throw denied();if(write){users.lockById(uid(a));auth.requireCurrentSession(token,uid(a));a=auth.authenticate(token);if(a.must_change_password()||!has(a,"resource:manage"))throw denied();}return a;}
  @Transactional(readOnly=true) public List<Map<String,Object>> owners(String token,String keyword){actor(token,false);if(keyword!=null&&keyword.length()>128)throw bad("搜索内容过长");var q=new HashMap<String,Object>();q.put("projectId",null);q.put("keyword",keyword==null||keyword.isBlank()?null:keyword.trim());return projects.users(q).stream().map(ResourceSupport::view).toList();}
  private void kind(String k){if(!Set.of("location","station","model","device").contains(k))throw bad("资源类型不正确");}
  @Transactional(readOnly=true) public Map<String,Object> list(String token,String kind,int page,int limit,String keyword,Integer status){var a=actor(token,false);kind(kind);if(page<1||limit<1||limit>100||keyword!=null&&keyword.length()>128||status!=null&&(status<0||status>2))throw bad("查询参数不正确");var q=q(kind,0);q.put("offset",(long)(page-1)*limit);q.put("limit",limit);q.put("keyword",keyword==null||keyword.isBlank()?null:keyword.trim());q.put("status",status);return Map.of("items",db.list(q).stream().map(ResourceSupport::view).toList(),"total",db.count(q),"can_manage",has(a,"resource:manage"));}
- @Transactional(readOnly=true) public Map<String,Object> detail(String token,String kind,long id){var a=actor(token,false);kind(kind);var row=db.get(q(kind,id));if(row==null)throw missing();var out=view(row);if(kind.equals("station"))out.put("devices",db.devices(id).stream().map(ResourceSupport::view).toList());if(kind.equals("device")){var c=db.connection(id);if(c!=null&&c.get("rtsp_url")!=null&&!has(a,"resource:manage")){c=new HashMap<>(c);c.put("rtsp_url",RtspAddress.parse(c.get("rtsp_url").toString()).displayUrl());}out.put("connection",c==null?null:view(c));out.put("connection_state","未验证");}return out;}
+ @Transactional(readOnly=true) public Map<String,Object> detail(String token,String kind,long id){var a=actor(token,false);kind(kind);var row=db.get(q(kind,id));if(row==null)throw missing();var out=view(row);if(kind.equals("station"))out.put("devices",db.devices(id).stream().map(ResourceSupport::view).toList());if(kind.equals("device")){var c=db.connection(id);if(c!=null&&c.get("rtsp_url")!=null&&!has(a,"resource:manage")){c=new HashMap<>(c);c.put("rtsp_url",RtspAddress.parse(c.get("rtsp_url").toString()).displayUrl());}out.put("connection",c==null?null:view(c));out.put("connection_state","未验证");out.put("frame_rates",cameraConfigs.camera(id));}return out;}
  public Map<String,Object> save(String token,String kind,Long id,Item r){
   kind(kind);var a=actor(token,true);if(r.owner_user_id()!=null){var u=users.lockById(r.owner_user_id());if(u==null||u.deletedAt()!=null||!Integer.valueOf(1).equals(u.status()))throw bad("负责人不存在或已停用");}
   var d=q(kind,id==null?0:id);var old=id==null?null:db.lock(d);if(id!=null){if(old==null)throw missing();version(old,r.version());}
@@ -39,6 +40,14 @@ public class ResourceService {
   if(id==null){d.put("code",BusinessCode.validate(r.code(),kind.equals("location")?"LOC":kind.equals("station")?"STA":kind.equals("model")?"TMD":"TOL"));try{db.insert(d);}catch(DuplicateKeyException e){throw conflict("编号或工位IP已存在，请确认是否已经创建成功或IP被其他工位绑定");}}
   else {if(r.code()!=null&&!r.code().equals(old.get("code")))throw bad("编号不可修改");try{changed(db.update(d));}catch(DuplicateKeyException e){throw conflict("工位IP已被其他工位绑定，请检查后重试");}}
   if(kind.equals("device")&&r.connection()!=null)replaceConnection(n(d,"id"),r.connection(),uid(a));
+  if (kind.equals("device") && r.frame_rates() != null) {
+   var model = db.get(q("model", r.model_id()));
+   if ("camera".equals(model.get("type_code"))) {
+    cameraConfigs.saveCamera(n(d,"id"), r.frame_rates().refresh_fps(), r.frame_rates().detect_fps(), uid(a));
+   } else if (r.frame_rates().refresh_fps() != null || r.frame_rates().detect_fps() != null) {
+    throw bad("仅摄像头可以设置摄像头参数");
+   }
+  }
   return detail(token,kind,n(d,"id"));
  }
  public void delete(String token,String kind,long id,int v){kind(kind);var a=actor(token,true);var q=q(kind,id);var row=db.lock(q);if(row==null)throw missing();version(row,v);if(db.references(q)>0)throw conflict("已有业务引用，请保留记录并调整关联");q.put("actor",uid(a));q.put("version",v);changed(db.delete(q));}
@@ -64,6 +73,11 @@ public class ResourceService {
   var q=new HashMap<String,Object>();q.put("id",id);q.put("transport",r.transport());q.put("protocol",r.protocol());q.put("host",network?host:null);q.put("port",network?port:null);q.put("path",network?path:null);q.put("rtsp_url",rtspUrl);q.put("host_key",local?r.host_key().trim():null);q.put("device_key",local?r.device_key().trim():null);q.put("enabled",r.enabled()?1:0);q.put("actor",actor);db.removeConnection(id);db.insertConnection(q);
   if(rtspUrl!=null){var saved=db.connection(id);if(saved==null||!rtspUrl.equals(saved.get("rtsp_url")))throw new org.jsut.common.BusinessException(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR,"RTSP地址未写入数据库，请检查后端数据库映射并重启后端");}
  }
+ @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ) public Map<String,Object> captureConfig(String token,long id){
+  String address=cameraAddress(token,id,false);
+  var device=db.get(q("device",id));if(device==null)throw missing();
+  return Map.of("device_id",Long.toString(id),"config_version",n(device,"version"),"rtsp_url",address,"frame_rates",cameraConfigs.effective(id));
+ }
  @Transactional(readOnly=true) public String cameraAddress(String token,long id,boolean manage){
   var a=auth.authenticate(token);if(a.must_change_password()||!has(a,manage?"resource:manage":"resource:use"))throw denied();
   var d=db.get(q("device",id));if(d==null)throw missing();
@@ -72,6 +86,14 @@ public class ResourceService {
   if(d.get("station_id")!=null){var station=db.get(q("station",n(d,"station_id")));if(station==null||n(station,"status")!=0)throw bad("摄像头所属工位不可用");}
   var c=db.connection(id);if(c==null||n(c,"enabled")!=1)throw bad("请先配置并启用摄像头连接");
   return rtsp(c);
+ }
+ @Transactional(readOnly=true) public Map<String,Object> frameRates(String token){var a=auth.authenticate(token);if(a.must_change_password())throw denied();var out=cameraConfigs.defaults();out.put("can_manage",a.is_superuser());return out;}
+ public Map<String,Object> saveFrameRates(String token,FrameRates r) {
+  var a = actor(token, true);
+  if (!a.is_superuser()) throw denied();
+  cameraConfigs.saveDefaults(r.refresh_fps(), r.detect_fps(), r.version(),
+      r.video_window_seconds(), r.detection_window_seconds(), r.update_interval_seconds(), uid(a));
+  return frameRates(token);
  }
  public String testCameraAddress(String token,ConnectionSettings settings){actor(token,true);if(!Boolean.TRUE.equals(settings.enabled()))throw bad("请先启用连接");var c=new HashMap<String,Object>();c.put("transport",settings.transport());c.put("protocol",settings.protocol());c.put("host",settings.host());c.put("port",settings.port());c.put("path",settings.path());c.put("rtsp_url",settings.rtsp_url());return rtsp(c);}
  private String rtsp(Map<String,Object> c){

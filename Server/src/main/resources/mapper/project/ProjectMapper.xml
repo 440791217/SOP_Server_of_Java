@@ -1,6 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="org.jsut.modules.project.mapper.ProjectMapper">
+  <select id="stations" resultType="map">
+    SELECT s.id,s.code,s.name,s.status,l.name AS location_name,
+      (SELECT COUNT(*) FROM sop_task t JOIN sop_subproject sp ON sp.id=t.subproject_id
+       WHERE sp.project_id=#{projectId} AND sp.deleted_at IS NULL AND t.deleted_at IS NULL AND t.status!=2 AND t.station_id=s.id) AS task_count
+    FROM sop_project_station ps JOIN sop_station s ON s.id=ps.station_id
+    LEFT JOIN sop_location l ON l.id=s.location_id AND l.deleted_at IS NULL
+    WHERE ps.project_id=#{projectId} AND s.deleted_at IS NULL
+    <if test="available">AND s.status=0</if>
+    <if test="keyword != null">AND (LOCATE(#{keyword},s.name)>0 OR LOCATE(#{keyword},s.code)>0)</if>
+    ORDER BY s.id
+  </select>
+  <select id="stationLinked" resultType="long">SELECT COUNT(*) FROM sop_project_station WHERE project_id=#{projectId} AND station_id=#{stationId}</select>
+  <select id="stationTasks" resultType="long">SELECT COUNT(*) FROM sop_task t JOIN sop_subproject sp ON sp.id=t.subproject_id WHERE sp.project_id=#{projectId} AND sp.deleted_at IS NULL AND t.deleted_at IS NULL AND t.status!=2 AND t.station_id=#{stationId}</select>
+  <insert id="linkStation">INSERT INTO sop_project_station(project_id,station_id,created_by) VALUES(#{projectId},#{stationId},#{actor})</insert>
+  <delete id="unlinkStation">DELETE FROM sop_project_station WHERE project_id=#{projectId} AND station_id=#{stationId}</delete>
   <sql id="projectFields">p.*, u.real_name AS owner_name, u.username AS owner_username,
     (SELECT COUNT(*) FROM sop_subproject s WHERE s.project_id=p.id AND s.deleted_at IS NULL) AS subproject_count</sql>
   <sql id="scope">p.deleted_at IS NULL

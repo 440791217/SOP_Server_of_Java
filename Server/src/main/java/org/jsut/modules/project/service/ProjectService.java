@@ -23,7 +23,28 @@ public class ProjectService {
     private final Clock clock;
     private final SopReferenceGuard sopReferences;
     private final RootDeletionService deletion;
-    public ProjectService(ProjectMapper db, AuthService auth, AuthMapper users, Clock clock,SopReferenceGuard sopReferences,RootDeletionService deletion) {this.deletion=deletion;this.db=db;this.auth=auth;this.users=users;this.clock=clock;this.sopReferences=sopReferences;}
+    private final org.jsut.modules.resource.mapper.ResourceMapper resources;
+    public ProjectService(ProjectMapper db, AuthService auth, AuthMapper users, Clock clock,SopReferenceGuard sopReferences,RootDeletionService deletion,org.jsut.modules.resource.mapper.ResourceMapper resources) {this.resources=resources;this.deletion=deletion;this.db=db;this.auth=auth;this.users=users;this.clock=clock;this.sopReferences=sopReferences;}
+
+    @Transactional(readOnly=true)
+    public Map<String,Object> stations(String token,long pid,String keyword,boolean available) {
+        var a=actor(token);var p=required(pid);read(a,p);
+        return Map.of("items",db.stations(pid,text(keyword,128,false),available).stream().map(this::view).toList(),"project_version",p.get("version"),"can_manage",integer(p,"status")<2&&editable(a,p,"project:update"));
+    }
+    public void linkStation(String token,long pid,StationLink request) {
+        var a=writeActor(token,null);var p=lock(pid);checkVersion(p,request.version());writable(p);
+        if(!editable(a,p,"project:update")||!has(a,"resource:read"))throw denied();
+        var station=resources.lock(Map.of("kind","station","id",request.station_id()));
+        if(station==null||integer(station,"status")!=0)throw bad("请选择可用工位");
+        if(db.stationLinked(pid,request.station_id())!=0)throw conflict("该工位已关联当前项目，请刷新");
+        changed(db.linkStation(pid,request.station_id(),uid(a)));bump(p,a);
+    }
+    public void unlinkStation(String token,long pid,long stationId,Version request) {
+        var a=writeActor(token,null);var p=lock(pid);checkVersion(p,request.version());writable(p);
+        if(!editable(a,p,"project:update"))throw denied();
+        if(db.stationTasks(pid,stationId)>0)throw conflict("该工位仍被未取消任务使用，请先调整或取消任务");
+        changed(db.unlinkStation(pid,stationId));bump(p,a);
+    }
 
     @Transactional(readOnly=true)
     public Map<String,Object> list(String token,int page,int limit,String keyword,Integer status) {

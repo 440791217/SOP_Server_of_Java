@@ -19,7 +19,7 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(authInterceptor).addPathPatterns("/user/**", "/project/**", "/sop/**", "/resource/**");
+        registry.addInterceptor(authInterceptor).addPathPatterns("/user/**", "/project/**", "/sop/**", "/resource/**", "/system/**");
     }
 
     @Override

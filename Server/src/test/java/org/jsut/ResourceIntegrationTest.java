@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
  "sop.bootstrap.root.enabled=false","server.port=0"})
 class ResourceIntegrationTest {
  @org.junit.jupiter.api.io.TempDir static java.nio.file.Path cameraFiles;
- @org.springframework.test.context.DynamicPropertySource static void cameraStorage(org.springframework.test.context.DynamicPropertyRegistry r){r.add("sop.storage.directory",()->cameraFiles.toString());}
+ @org.springframework.test.context.DynamicPropertySource static void cameraStorage(org.springframework.test.context.DynamicPropertyRegistry r){r.add("sop.storage.directory",()->cameraFiles.toString());r.add("sop.storage.data-root",()->cameraFiles.resolve("data").toString());}
  @org.springframework.test.context.bean.override.mockito.MockitoBean org.jsut.modules.resource.service.CameraMediaService camera;
  @Autowired JdbcTemplate jdbc;@Autowired AuthService auth;@Autowired RootInitializationService initializer;@Autowired PasswordEncoder encoder;@Autowired ObjectMapper json;@Value("${local.server.port}") int port;
  String root,owner,outsider;final HttpClient http=HttpClient.newHttpClient();
@@ -67,8 +67,10 @@ class ResourceIntegrationTest {
   c.put("rtsp_url","rtsp://192.0.2.10/live");c.put("enabled",false);assertEquals(200,send("PUT","/resource/device/"+did+"/connection",c,root).statusCode());assertEquals(400,send("POST","/resource/device/"+did+"/snapshot",null,root).statusCode());
  }
  @BeforeEach void seed(){
+  jdbc.update("DELETE FROM sop_camera_config WHERE device_id IS NOT NULL");
+  jdbc.update("UPDATE sop_camera_config SET refresh_fps=0,detect_fps=2,version=0,video_window_seconds=2,detection_window_seconds=5,update_interval_seconds=1 WHERE device_id IS NULL");
   org.mockito.Mockito.when(camera.snapshot(org.mockito.ArgumentMatchers.anyString())).thenReturn(new byte[]{(byte)255,(byte)216,(byte)255,(byte)217});
-  for(String t:List.of("sop_task_content","sop_task_standard","sop_task","sop_step_resource_requirement","sop_device_connection","sop_resource_device","sop_resource_model","sop_station","sop_location","sop_step_visual","sop_project_binding","sop_subproject_binding","sop_step_attachment","sop_file","sop_step","sop_revision","sop_document","sop_project_activity","sop_subproject","sop_project_member","sop_project","sys_user_session","sys_user_role","sys_role_permission","sys_user","sys_team","sys_role","sys_permission"))jdbc.execute("DELETE FROM "+t);
+  for(String t:List.of("sop_task_content","sop_task_standard","sop_task","sop_step_resource_requirement","sop_device_connection","sop_resource_device","sop_resource_model","sop_project_station","sop_station","sop_location","sop_step_visual","sop_project_binding","sop_subproject_binding","sop_step_attachment","sop_file","sop_step","sop_revision","sop_document","sop_project_activity","sop_subproject","sop_project_member","sop_project","sys_user_session","sys_user_role","sys_role_permission","sys_user","sys_team","sys_role","sys_permission"))jdbc.execute("DELETE FROM "+t);
   jdbc.update("INSERT INTO sys_user(id,username,real_name,status,is_superuser) VALUES(1,'root','Root',0,1)");initializer.initialize("Root123!");String hash=encoder.encode("User123!");
   for(int i=2;i<=3;i++)jdbc.update("INSERT INTO sys_user(id,username,real_name,password_hash,status,must_change_password) VALUES(?,?,?,?,1,0)",i,"user"+i,"用户"+i,hash);
   jdbc.update("INSERT INTO sop_location(id,code,name,created_by,updated_by) VALUES(1,'LOC-BASE','测试区域',1,1)");
@@ -83,10 +85,130 @@ class ResourceIntegrationTest {
  HttpResponse<String> send(String method,String path,Object body,String token)throws Exception{var b=HttpRequest.newBuilder(URI.create("http://localhost:"+port+path));if(token!=null)b.header("Authorization","Bearer "+token);b.header("Content-Type","application/json");return http.send(b.method(method,body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build(),HttpResponse.BodyHandlers.ofString());}
  String id(HttpResponse<String> r){assertEquals(200,r.statusCode(),r.body());return JsonPath.read(r.body(),"$.data.id");}
  Map<String,Object> item(String prefix,String name){var m=new HashMap<String,Object>(Map.of("code",prefix+"-202610162030-A7F29C","name",name,"status",0));if(prefix.equals("STA")){m.put("location_id",1);m.put("ip_address","198.51.100.1");}return m;}
- String station()throws Exception{return id(send("POST","/resource/station",item("STA","工位A"),root));}
+ String station()throws Exception{String stationId=id(send("POST","/resource/station",item("STA","工位A"),root));jdbc.update("INSERT INTO sop_project_station(project_id,station_id,created_by) VALUES(10,?,1)",stationId);return stationId;}
  String model()throws Exception{var m=item("TMD","摄像头规格");m.put("type_code","camera");m.put("unit","台");m.put("specification","高清");return id(send("POST","/resource/model",m,root));}
  String device(String mid,String sid)throws Exception{var d=item("TOL","摄像头01");d.put("model_id",mid);d.put("station_id",sid);return id(send("POST","/resource/device",d,root));}
  Map<String,Object> task(String sid){var t=item("TSK","检查任务");t.put("owner_user_id",2);t.put("sort_order",0);if(sid!=null)t.put("station_id",sid);return t;}
+ @Test void systemAppearanceSettingsAreSeparateValidatedAndAtomic() throws Exception {
+  jdbc.update("UPDATE sop_system_setting SET version=0");
+  assertEquals(401, send("GET", "/system/settings/appearance", null, null).statusCode());
+  var values = Map.of("theme", "#13ce66", "tagsView", false, "fixedHeader", true, "sidebarLogo", true);
+  var versions = Map.of("theme", 0, "tagsView", 0, "fixedHeader", 0, "sidebarLogo", 0);
+  var update = Map.of("values", values, "versions", versions);
+  assertEquals(403, send("PUT", "/system/settings/appearance", update, outsider).statusCode());
+  var saved = send("PUT", "/system/settings/appearance", update, root);
+  assertEquals(200, saved.statusCode(), saved.body());
+  assertEquals("#13ce66", JsonPath.<Object>read(saved.body(), "$.data.values.theme"));
+  assertEquals(1L, jdbc.queryForObject("SELECT updated_by FROM sop_system_setting WHERE config_key='appearance.theme'", Long.class));
+  assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM sop_system_setting WHERE config_key LIKE 'camera.%'", Integer.class));
+  var stale = Map.of("theme", 0, "tagsView", 1, "fixedHeader", 1, "sidebarLogo", 1);
+  var changedValues = Map.of("theme", "#409eff", "tagsView", true, "fixedHeader", false, "sidebarLogo", false);
+  assertEquals(409, send("PUT", "/system/settings/appearance", Map.of("values", changedValues, "versions", stale), root).statusCode());
+  assertEquals("true", jdbc.queryForObject("SELECT config_value FROM sop_system_setting WHERE config_key='appearance.fixedHeader'", String.class));
+  assertEquals(1, jdbc.queryForObject("SELECT version FROM sop_system_setting WHERE config_key='appearance.fixedHeader'", Integer.class));
+  var invalid = new HashMap<String, Object>(values);
+  invalid.put("theme", "javascript:bad");
+  assertEquals(400, send("PUT", "/system/settings/appearance", Map.of("values", invalid, "versions", stale), root).statusCode());
+  invalid.put("camera.refresh_fps", 30);
+  assertEquals(400, send("PUT", "/system/settings/appearance", Map.of("values", invalid, "versions", stale), root).statusCode());
+ }
+
+ @Test void cameraConfigHasOneDefaultAndRetainsOverrideAudit() throws Exception {
+  assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM sop_camera_config WHERE device_id IS NULL", Integer.class));
+  assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> jdbc.update("""
+      INSERT INTO sop_camera_config(device_id,refresh_fps,detect_fps,video_window_seconds,detection_window_seconds,update_interval_seconds)
+      VALUES(NULL,0,2,2,5,1)
+      """));
+  String sid = station();
+  String mid = model();
+  String did = device(mid, sid);
+  var edit = item("TOL", "摄像头01");
+  edit.put("model_id", mid);
+  edit.put("station_id", sid);
+  edit.put("version", 0);
+  edit.put("frame_rates", Map.of("refresh_fps", 0, "detect_fps", 5));
+  assertEquals(200, send("PUT", "/resource/device/" + did, edit, root).statusCode());
+  assertEquals(1L, jdbc.queryForObject("SELECT updated_by FROM sop_camera_config WHERE device_id=?", Long.class, did));
+  assertEquals(5, jdbc.queryForObject("SELECT detect_fps FROM sop_camera_config WHERE device_id=?", Integer.class, did));
+ }
+
+ @Test void statisticsSettingsAreValidatedVersionedAndPreservedForOlderClients() throws Exception {
+  var initial = send("GET", "/resource/frame-rates", null, root);
+  assertEquals(2, JsonPath.<Object>read(initial.body(), "$.data.video_window_seconds"));
+  assertEquals(5, JsonPath.<Object>read(initial.body(), "$.data.detection_window_seconds"));
+  var update = Map.of("refresh_fps", 0, "detect_fps", 2, "version", 0,
+      "video_window_seconds", 3, "detection_window_seconds", 8, "update_interval_seconds", 2);
+  assertEquals(403, send("PUT", "/resource/frame-rates", update, outsider).statusCode());
+  var saved = send("PUT", "/resource/frame-rates", update, root);
+  assertEquals(200, saved.statusCode(), saved.body());
+  assertEquals(8, JsonPath.<Object>read(saved.body(), "$.data.detection_window_seconds"));
+  assertEquals(409, send("PUT", "/resource/frame-rates", update, root).statusCode());
+  var invalid = new HashMap<String, Object>(update);
+  invalid.put("version", 1);
+  invalid.put("video_window_seconds", 0);
+  assertEquals(400, send("PUT", "/resource/frame-rates", invalid, root).statusCode());
+  invalid.put("video_window_seconds", 31);
+  assertEquals(400, send("PUT", "/resource/frame-rates", invalid, root).statusCode());
+  var legacy = send("PUT", "/resource/frame-rates", Map.of("refresh_fps", 10, "detect_fps", 4, "version", 1), root);
+  assertEquals(200, legacy.statusCode(), legacy.body());
+  assertEquals(3, JsonPath.<Object>read(legacy.body(), "$.data.video_window_seconds"));
+  assertEquals(8, JsonPath.<Object>read(legacy.body(), "$.data.detection_window_seconds"));
+  assertEquals(2, JsonPath.<Object>read(legacy.body(), "$.data.update_interval_seconds"));
+ }
+
+ @Test void captureConfigurationDoesNotStartJavaMedia()throws Exception{
+  String sid=station(),mid=model(),did=device(mid,sid);
+  var connection=Map.of("transport","network","protocol","rtsp","rtsp_url","rtsp://operator:camera-password@192.0.2.10:554/live","enabled",true,"device_version",0);
+  assertEquals(200,send("PUT","/resource/device/"+did+"/connection",connection,root).statusCode());
+  org.mockito.Mockito.clearInvocations(camera);
+  var config=send("GET","/resource/device/"+did+"/capture-config",null,root);
+  assertEquals(200,config.statusCode(),config.body());assertEquals("no-store",config.headers().firstValue("Cache-Control").orElse(""));
+  assertEquals(did,JsonPath.read(config.body(),"$.data.device_id"));assertEquals(1,((Number)JsonPath.read(config.body(),"$.data.config_version")).intValue());
+  assertEquals("rtsp://operator:camera-password@192.0.2.10:554/live",JsonPath.read(config.body(),"$.data.rtsp_url"));
+  assertEquals(0,JsonPath.<Object>read(config.body(),"$.data.frame_rates.refresh_fps"));assertEquals(2,JsonPath.<Object>read(config.body(),"$.data.frame_rates.detect_fps"));
+  var globals=Map.of("refresh_fps",30,"detect_fps",4,"version",0);
+  assertEquals(403,send("PUT","/resource/frame-rates",globals,outsider).statusCode());
+  assertEquals(200,send("PUT","/resource/frame-rates",globals,root).statusCode());
+  assertEquals(409,send("PUT","/resource/frame-rates",globals,root).statusCode());
+  assertEquals(400,send("PUT","/resource/frame-rates",Map.of("refresh_fps",-1,"detect_fps",0,"version",1),root).statusCode());
+  var inherited=send("GET","/resource/device/"+did+"/capture-config",null,root);assertEquals(30,JsonPath.<Object>read(inherited.body(),"$.data.frame_rates.refresh_fps"));assertEquals(4,JsonPath.<Object>read(inherited.body(),"$.data.frame_rates.detect_fps"));
+  var edit=item("TOL","摄像头01");edit.put("model_id",mid);edit.put("station_id",sid);edit.put("version",1);edit.put("frame_rates",Map.of("refresh_fps",10,"detect_fps",5));
+  assertEquals(200,send("PUT","/resource/device/"+did,edit,root).statusCode());
+  var overridden=send("GET","/resource/device/"+did+"/capture-config",null,root);assertEquals(10,JsonPath.<Object>read(overridden.body(),"$.data.frame_rates.refresh_fps"));assertEquals(5,JsonPath.<Object>read(overridden.body(),"$.data.frame_rates.detect_fps"));
+  var defaults=new HashMap<String,Object>();defaults.put("refresh_fps",null);defaults.put("detect_fps",null);edit.put("frame_rates",defaults);edit.put("version",2);
+  assertEquals(200,send("PUT","/resource/device/"+did,edit,root).statusCode());
+  assertEquals(4,JsonPath.<Object>read(send("GET","/resource/device/"+did+"/capture-config",null,root).body(),"$.data.frame_rates.detect_fps"));
+  assertEquals(403,send("GET","/resource/device/"+did+"/capture-config",null,outsider).statusCode());
+  org.mockito.Mockito.verifyNoInteractions(camera);
+ }
+ @Test void projectStationsRestrictTasksAndProtectLinks()throws Exception{
+  String sid=station();jdbc.update("DELETE FROM sop_project_station WHERE project_id=10");
+  assertEquals(400,send("POST","/project/10/subproject/11/task",task(sid),root).statusCode());
+  assertEquals(403,send("GET","/project/10/station/list",null,outsider).statusCode());
+  assertEquals(403,send("POST","/project/10/station",Map.of("station_id",sid,"version",0),outsider).statusCode());
+  assertEquals(403,send("POST","/project/10/station",Map.of("station_id",sid,"version",0),owner).statusCode());
+  assertEquals(200,send("POST","/project/10/station",Map.of("station_id",sid,"version",0),root).statusCode());
+  assertEquals(409,send("POST","/project/10/station",Map.of("station_id",sid,"version",0),root).statusCode());
+  var linked=send("GET","/project/10/station/list?available=true&keyword=工位",null,root);
+  assertEquals(200,linked.statusCode(),linked.body());assertEquals(sid,JsonPath.read(linked.body(),"$.data.items[0].id"));
+  var otherTask=task(sid);otherTask.put("owner_user_id",3);
+  assertEquals(400,send("POST","/project/20/subproject/21/task",otherTask,root).statusCode());
+  String tid=id(send("POST","/project/10/subproject/11/task",task(sid),root));
+  assertEquals(409,send("DELETE","/project/10/station/"+sid,Map.of("version",1),root).statusCode());
+  var cancelled=task(sid);cancelled.put("version",0);cancelled.put("status",2);
+  assertEquals(200,send("PUT","/project/10/subproject/11/task/"+tid,cancelled,root).statusCode());
+  assertEquals(200,send("DELETE","/project/10/station/"+sid,Map.of("version",1),root).statusCode());
+  assertEquals(0,jdbc.queryForObject("SELECT COUNT(*) FROM sop_project_station WHERE project_id=10",Integer.class));
+  assertEquals(400,send("POST","/project/10/subproject/11/task",task(sid),root).statusCode());
+ }
+ @Test void inactiveStationsAreNotTaskOptionsAndCannotBeNewlyLinked()throws Exception{
+  String sid=station();jdbc.update("UPDATE sop_station SET status=1 WHERE id=?",sid);
+  var options=send("GET","/project/10/station/list?available=true",null,root);
+  assertEquals(0,((List<?>)JsonPath.read(options.body(),"$.data.items")).size());
+  assertEquals(1,((List<?>)JsonPath.read(send("GET","/project/10/station/list",null,root).body(),"$.data.items")).size());
+  assertEquals(400,send("POST","/project/20/station",Map.of("station_id",sid,"version",0),root).statusCode());
+  assertEquals(400,send("POST","/project/10/subproject/11/task",task(sid),root).statusCode());
+ }
  @Test void stationTaskListFiltersProjectsAndRequiresStationForDrafts()throws Exception{
   String sid=station();assertEquals(400,send("POST","/project/10/subproject/11/task",task(null),root).statusCode());
   String tid=id(send("POST","/project/10/subproject/11/task",task(sid),root));
@@ -97,6 +219,8 @@ class ResourceIntegrationTest {
   jdbc.update("UPDATE sop_task SET station_id=NULL WHERE id=?",tid);var edit=task(null);edit.put("version",0);assertEquals(400,send("PUT","/project/10/subproject/11/task/"+tid,edit,root).statusCode());edit.put("status",2);assertEquals(200,send("PUT","/project/10/subproject/11/task/"+tid,edit,root).statusCode());
  }
  @Test void onsiteReadinessRequiresPublishedConfiguredActiveTask()throws Exception{
+  jdbc.update("UPDATE sop_subproject SET status=1 WHERE id=11");
+  jdbc.update("UPDATE sop_project SET status=1 WHERE id=10");
   String sid=station();var t=task(sid);t.put("status",1);t.put("sop_id",30);t.put("revision_id",31);String tid=id(send("POST","/project/10/subproject/11/task",t,root));
   assertEquals(true,JsonPath.read(send("GET","/resource/station/"+sid+"/task",null,root).body(),"$.data.items[0].onsite_available"));
   jdbc.update("UPDATE sop_task SET status=0 WHERE id=?",tid);
@@ -108,6 +232,7 @@ class ResourceIntegrationTest {
  }
  @Test void switchingStationRechecksHardwareAndRetainsStandard()throws Exception{
   String first=station(),mid=model();String deviceId=device(mid,first);var second=item("STA","备用工位");second.put("code","STA-202610162030-B7F29C");second.put("ip_address","198.51.100.2");String next=id(send("POST","/resource/station",second,root));
+  jdbc.update("INSERT INTO sop_project_station(project_id,station_id,created_by) VALUES(10,?,1)",next);
   jdbc.update("INSERT INTO sop_step_resource_requirement(step_id,model_id,name,type_code,unit,quantity,sort_order) VALUES(41,?,'摄像头','camera','台',1,1)",mid);
   var t=task(first);t.put("status",1);t.put("sop_id",30);t.put("revision_id",31);String tid=id(send("POST","/project/10/subproject/11/task",t,root));t.put("station_id",next);t.put("version",0);
   assertEquals(409,send("PUT","/project/10/subproject/11/task/"+tid,t,root).statusCode());assertEquals(Long.valueOf(first),jdbc.queryForObject("SELECT station_id FROM sop_task WHERE id=?",Long.class,tid));
@@ -118,6 +243,8 @@ class ResourceIntegrationTest {
   var body=Map.of("sop_id",30,"revision_id",32,"revision_version",0,"task_version",0);
   assertEquals(403,send("PUT","/project/10/subproject/11/task/"+tid+"/publish",body,outsider).statusCode());assertEquals(0,jdbc.queryForObject("SELECT status FROM sop_revision WHERE id=32",Integer.class));
   var result=send("PUT","/project/10/subproject/11/task/"+tid+"/publish",body,root);assertEquals(200,result.statusCode(),result.body());assertEquals(1,jdbc.queryForObject("SELECT status FROM sop_revision WHERE id=32",Integer.class));assertEquals(1,jdbc.queryForObject("SELECT status FROM sop_task WHERE id=?",Integer.class,tid));assertEquals(32,jdbc.queryForObject("SELECT revision_id FROM sop_task_standard WHERE task_id=? AND active=1",Integer.class,tid));
+  assertEquals(0,jdbc.queryForObject("SELECT status FROM sop_subproject WHERE id=11",Integer.class));
+  assertEquals(200,send("GET","/project/10/subproject/11/task/"+tid+"/preview",null,root).statusCode());
   assertEquals(409,send("PUT","/project/10/subproject/11/task/"+tid+"/publish",body,root).statusCode());assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM sop_task_standard WHERE task_id=?",Integer.class,tid));
  }
  @Test void publishAndUseRollsBackPublicationWhenStationHardwareDoesNotMatch()throws Exception{
@@ -144,7 +271,12 @@ class ResourceIntegrationTest {
   assertEquals(200,send("PUT","/sop/"+doc+"/version/"+rid+"/step/"+step,Map.of("title","仅任务一修改","instruction","新的步骤","version",0,"revision_version",revisionVersion),root).statusCode());assertEquals("检查内容",jdbc.queryForObject("SELECT instruction FROM sop_step WHERE id=41",String.class));
   assertEquals(31,jdbc.queryForObject("SELECT revision_id FROM sop_task_standard WHERE task_id=? AND active=1",Integer.class,secondTask));
   revisionVersion=jdbc.queryForObject("SELECT version FROM sop_revision WHERE id=?",Integer.class,rid);var publish=Map.of("sop_id",Long.parseLong(doc),"revision_id",Long.parseLong(rid),"revision_version",revisionVersion,"task_version",1);assertEquals(200,send("PUT","/project/10/subproject/11/task/"+firstTask+"/publish",publish,root).statusCode());
+  jdbc.update("INSERT INTO sop_revision(sop_id,revision_no,title,status,published_by,published_at,created_by,updated_by) VALUES(?,2,'未生效的历史版',1,1,CURRENT_TIMESTAMP,1,1)",doc);
   var next=send("POST","/project/10/subproject/11/task/"+firstTask+"/content",Map.of("version",2),root);assertEquals(200,next.statusCode(),next.body());String nextRid=JsonPath.read(next.body(),"$.data.revision_id");assertNotEquals(rid,nextRid);assertEquals(doc,JsonPath.read(next.body(),"$.data.sop_id"));assertEquals("任务内容更新",jdbc.queryForObject("SELECT revision_note FROM sop_revision WHERE id=?",String.class,nextRid));assertEquals(31,jdbc.queryForObject("SELECT revision_id FROM sop_task_standard WHERE task_id=? AND active=1",Integer.class,secondTask));
+  assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM sop_step WHERE revision_id=?",Integer.class,nextRid));
+  assertEquals("新的步骤",jdbc.queryForObject("SELECT instruction FROM sop_step WHERE revision_id=?",String.class,nextRid));
+  assertEquals(3,((Number)JsonPath.read(next.body(),"$.data.task.content_draft_no")).intValue());
+
  }
  @Test void resourceScopeValidationAndVersionProtection()throws Exception{
   assertEquals(401,send("GET","/resource/station",null,null).statusCode());assertEquals(403,send("GET","/resource/station",null,outsider).statusCode());

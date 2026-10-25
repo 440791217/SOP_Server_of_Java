@@ -25,6 +25,7 @@ public class SopService {
     private final AuthService auth;
     private final Clock clock;
     private final SopImageStorage images;
+    @org.springframework.beans.factory.annotation.Autowired private org.jsut.common.storage.StoragePaths storagePaths;
     private final SopVisualService visuals;
     private final org.jsut.modules.resource.service.StepResourceService resources;
     private final org.jsut.modules.resource.mapper.ResourceMapper resourceDb;
@@ -90,7 +91,11 @@ public class SopService {
     private void copyTaskSteps(long sourceRevisionId,long rid,long actorId){
         for(var s:db.steps(sourceRevisionId)){
             var copied=stepData(rid,(String)s.get("title"),(String)s.get("instruction"),(String)s.get("precautions"),(String)s.get("check_requirements"),(BigDecimal)s.get("expected_duration_seconds"));settings(copied,(BigDecimal)s.get("detection_wait_seconds"),number(s,"voice_enabled")==1,(String)s.get("voice_text"));copied.put("position",number(s,"sort_order"));db.insertStep(copied);resources.copy(num(s,"id"),num(copied,"id"),(String)s.get("workplace_requirements"));
-            for(var attachment:db.rawAttachments(num(s,"id"))){var link=new HashMap<String,Object>();link.put("stepId",num(copied,"id"));link.put("fileId",attachment.get("file_id"));link.put("caption",attachment.get("caption"));link.put("position",attachment.get("sort_order"));db.copyAttachment(link);visuals.copy(num(attachment,"id"),num(link,"id"),actorId);}
+            var detection=db.detection(num(s,"id"));Long baseline=null;
+            var sourceImages=db.rawAttachments(num(s,"id"));
+            var sourceImage=detection==null?sourceImages.stream().findFirst().orElse(null):sourceImages.stream().filter(a->Objects.equals(detection.get("attachment_id"),a.get("id"))).findFirst().orElse(null);
+            for(var attachment:sourceImage==null?List.<Map<String,Object>>of():List.of(sourceImage)){var link=new HashMap<String,Object>();link.put("stepId",num(copied,"id"));link.put("fileId",attachment.get("file_id"));link.put("caption",attachment.get("caption"));link.put("position",attachment.get("sort_order"));db.copyAttachment(link);visuals.copy(num(attachment,"id"),num(link,"id"),actorId);if(detection!=null&&Objects.equals(detection.get("attachment_id"),attachment.get("id")))baseline=num(link,"id");}
+            if(detection!=null){detection.put("stepId",num(copied,"id"));detection.put("attachment_id",baseline);db.saveDetection(detection);}
         }
     }
     // Source is a published snapshot already authorized through the calling task.
@@ -111,11 +116,11 @@ public class SopService {
         if(!Objects.equals(c.document.get("name"),name)){var d=mutation(id,number(c.document,"version"),c.actor);d.put("name",text(name,128,true));changed(db.editDocument(d));}
         var latest=document(id);if(num(latest,"owner_user_id")!=ownerId){var d=mutation(id,number(latest,"version"),c.actor);d.put("owner",ownerId);changed(db.owner(d));}
     }
-    public Map<String,Object> taskDraft(String token,long id){
+    public Map<String,Object> taskDraft(String token,long id,Long activeRevisionId){
         var c=write(token,id,null);open(c.project);requireEdit(c,"sop:update");
         var revisions=db.revisions(id);var existing=revisions.stream().filter(r->number(r,"status")==0).findFirst();
         if(existing.isPresent())return Map.of("revision",revisionView(existing.get()),"created",false);
-        var source=revisions.stream().filter(r->number(r,"status")!=0).findFirst().orElse(null);
+        var source=activeRevisionId==null?revisions.stream().filter(r->number(r,"status")!=0).findFirst().orElse(null):revision(id,activeRevisionId);
         long next=db.nextRevision(id);if(next>Integer.MAX_VALUE)throw conflict("版本编号已达上限");
         var data=revisionData(id,next,(String)c.document.get("name"),source==null?null:(String)source.get("applicable_scope"),source==null?null:(String)source.get("purpose"),source==null?null:(String)source.get("precautions"),next>1?"任务内容更新":null,c.actor);db.insertRevision(data);long rid=num(data,"id");
         if(source!=null)copyTaskSteps(num(source,"id"),rid,uid(c.actor));bump(c);return Map.of("revision",revisionView(revision(id,rid)),"created",true);
@@ -139,7 +144,8 @@ public class SopService {
     public Map<String,Object> saveAuthoring(String token,long id,long rid,long sid,Authoring r){
         var c=write(token,id,null);open(c.project);requireEdit(c,"sop:update");var rstep=r.step();var v=draft(id,rid,rstep.revision_version());var previous=step(rid,sid);version(previous,rstep.version());
         var attachments=db.rawAttachments(sid);var ids=new HashSet<Long>();
-        for(var visual:r.visuals()){
+        if(r.visual()!=null&&r.visuals()!=null&&!r.visuals().isEmpty())throw bad("请仅提交当前步骤的单张图片标注");
+        for(var visual:r.visual()!=null?List.of(r.visual()):r.visuals()==null?List.<Visual>of():r.visuals()){
             if(!ids.add(visual.attachment_id()))throw bad("图片引用不能重复");
             var attachment=attachments.stream().filter(a->num(a,"id")==visual.attachment_id()).findFirst().orElseThrow(this::missing);
             visuals.save(visual,num(attachment,"file_id"),uid(c.actor));
@@ -148,12 +154,15 @@ public class SopService {
         settings(d,rstep.detection_wait_seconds()==null?(BigDecimal)previous.get("detection_wait_seconds"):rstep.detection_wait_seconds(),rstep.voice_enabled()==null?number(previous,"voice_enabled")==1:rstep.voice_enabled(),rstep.voice_text()==null?(String)previous.get("voice_text"):rstep.voice_text());
         d.put("id",sid);d.put("version",rstep.version());changed(db.editStep(d));
         resources.save(sid,r.resources());
+        if(r.detection()!=null){var config=new HashMap<String,Object>();config.put("stepId",sid);config.put("enabled",r.detection().enabled());config.put("camera_id",r.detection().camera_id());config.put("attachment_id",r.detection().attachment_id());config.put("confirmed",r.detection().confirmed());
+            if(r.detection().attachment_id()!=null&&attachments.stream().noneMatch(a->num(a,"id")==r.detection().attachment_id()))throw bad("检测基准图必须属于当前步骤");
+            if(r.detection().enabled()&&r.detection().camera_id()!=null)validateCamera(id,r.detection().camera_id());db.saveDetection(config);}
         if(r.revision()!=null){var header=r.revision();version(v,header.version());var rd=revisionData(id,num(v,"revision_no"),header.title(),header.applicable_scope(),header.purpose(),header.precautions(),header.revision_note(),c.actor);rd.put("id",rid);rd.put("version",header.version());changed(db.editRevision(rd));bump(c);}else bumpRevision(c,v);
         return revisionView(revision(id,rid));
     }
     public Map<String,Object> deleteStep(String token,long id,long rid,long sid,StepDelete r){
         var c=write(token,id,null);open(c.project);requireEdit(c,"sop:update");var v=draft(id,rid,r.revision_version());version(step(rid,sid),r.version());
-        db.deleteAttachments(sid);changed(db.deleteStep(rid,sid,r.version()));int i=1;for(var s:db.steps(rid))changed(db.sortStep(rid,num(s,"id"),i++));bumpRevision(c,v);return revisionView(revision(id,rid));
+        db.clearDetection(sid);db.deleteAttachments(sid);changed(db.deleteStep(rid,sid,r.version()));int i=1;for(var s:db.steps(rid))changed(db.sortStep(rid,num(s,"id"),i++));bumpRevision(c,v);return revisionView(revision(id,rid));
     }
     public Map<String,Object> sort(String token,long id,long rid,Sort r){
         var c=write(token,id,null);open(c.project);requireEdit(c,"sop:update");var v=draft(id,rid,r.version());var expected=db.steps(rid).stream().map(s->num(s,"id")).toList();
@@ -165,7 +174,7 @@ public class SopService {
         if(number(v,"revision_no")>1&&text((String)v.get("revision_note"),1000,false)==null)throw bad("新版本发布前请填写修订说明");
         text((String)v.get("title"),128,true);var steps=db.steps(rid);if(steps.isEmpty())throw bad("至少添加一个步骤才能发布");
         for(int i=0;i<steps.size();i++){
-            var s=steps.get(i);resources.validate(num(s,"id"));if(number(s,"sort_order")!=i+1)throw bad("步骤顺序不连续，请重新排序");text((String)s.get("title"),128,true);text((String)s.get("instruction"),10000,true);settings(new HashMap<>(),(BigDecimal)s.get("detection_wait_seconds"),number(s,"voice_enabled")==1,(String)s.get("voice_text"));
+            var s=steps.get(i);validateDetection(id,num(s,"id"));resources.validate(num(s,"id"));if(number(s,"sort_order")!=i+1)throw bad("步骤顺序不连续，请重新排序");text((String)s.get("title"),128,true);text((String)s.get("instruction"),10000,true);settings(new HashMap<>(),(BigDecimal)s.get("detection_wait_seconds"),number(s,"voice_enabled")==1,(String)s.get("voice_text"));
             for(var a:db.rawAttachments(num(s,"id"))){visuals.validateStored(num(a,"id"));try{images.validateStored(db.file(num(a,"file_id")));}catch(BusinessException e){throw conflict("步骤图片缺失或损坏，请重新上传后发布");}}
         }
         changed(db.publish(revisionMutation(id,rid,r.version(),c.actor)));bump(c);return revisionView(revision(id,rid));
@@ -175,18 +184,30 @@ public class SopService {
         if(db.activeBindings(rid)>0||resourceDb.revisionTasks(rid)>0)throw conflict("仍有未完成项目或子项目使用本版本，请先切换或解绑");
         changed(db.retire(revisionMutation(id,rid,r.version(),c.actor)));bump(c);return revisionView(revision(id,rid));
     }
-    public Map<String,Object> uploadImage(String token,long id,long rid,long sid,int version,org.springframework.web.multipart.MultipartFile file){
+    public Map<String,Object> uploadImage(String token,long id,long rid,long sid,int version,org.springframework.web.multipart.MultipartFile file,Long cameraId,Long replaceAttachmentId){
         var c=write(token,id,null);open(c.project);requireEdit(c,"sop:update");var v=draft(id,rid,version);step(rid,sid);
-        var previous=db.rawAttachments(sid);if(previous.size()>=20)throw bad("每个步骤最多20张图片");
-        var stored=images.save(file);
+        var previous=db.rawAttachments(sid);
+        if(replaceAttachmentId!=null&&(cameraId==null||previous.stream().noneMatch(a->num(a,"id")==replaceAttachmentId)))throw bad("替换图片必须属于当前步骤，且需指定拍摄摄像头");
+        if(cameraId!=null){positive(cameraId);validateCamera(id,cameraId);}
+        var ownerTask=resourceDb.contentOwnerTask(id);
+        String directory=storagePaths.annotation(num(c.project,"id"),ownerTask==null?null:num(ownerTask,"subproject_id"),ownerTask==null?null:num(ownerTask,"task_id"),id,number(v,"revision_no"));
+        var stored=images.save(file,directory,"step-"+sid+"_");
         org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
             @Override public void afterCompletion(int status){if(status!=STATUS_COMMITTED)images.rollbackDelete(stored.key());}
         });
         var data=new HashMap<String,Object>();data.put("key",stored.key());data.put("name",stored.name());data.put("mime",stored.mime());data.put("size",stored.bytes().length);data.put("sha",stored.sha());data.put("actor",uid(c.actor));db.insertFile(data);
-        var link=new HashMap<String,Object>();link.put("stepId",sid);link.put("fileId",num(data,"id"));link.put("caption",null);link.put("position",previous.stream().mapToInt(a->number(a,"sort_order")).max().orElse(0)+1);db.copyAttachment(link);bumpRevision(c,v);return revisionView(revision(id,rid));
+        var link=new HashMap<String,Object>();link.put("stepId",sid);link.put("fileId",num(data,"id"));link.put("caption",null);link.put("position",previous.stream().mapToInt(a->number(a,"sort_order")).max().orElse(0)+1);db.copyAttachment(link);
+        if(cameraId!=null){var config=new HashMap<String,Object>();config.put("stepId",sid);config.put("enabled",true);config.put("camera_id",cameraId);config.put("attachment_id",num(link,"id"));config.put("confirmed",true);db.saveDetection(config);}
+        if(cameraId==null){var config=db.detection(sid);if(config!=null){config.put("stepId",sid);config.put("attachment_id",num(link,"id"));config.put("confirmed",false);db.saveDetection(config);}}
+        for(var old:previous)db.deleteAttachment(sid,num(old,"id"));
+        bumpRevision(c,v);return revisionView(revision(id,rid));
     }
     public Map<String,Object> removeImage(String token,long id,long rid,long sid,long attachmentId,int version){
-        var c=write(token,id,null);open(c.project);requireEdit(c,"sop:update");var v=draft(id,rid,version);step(rid,sid);positive(attachmentId);if(db.deleteAttachment(sid,attachmentId)!=1)throw missing();bumpRevision(c,v);return revisionView(revision(id,rid));
+        var c=write(token,id,null);open(c.project);requireEdit(c,"sop:update");var v=draft(id,rid,version);step(rid,sid);positive(attachmentId);
+        if(db.rawAttachments(sid).stream().noneMatch(a->num(a,"id")==attachmentId))throw missing();
+        var detection=db.detection(sid);
+        if(detection!=null){detection.put("stepId",sid);detection.put("attachment_id",null);detection.put("confirmed",false);detection.put("enabled",false);db.saveDetection(detection);}
+        db.deleteAttachments(sid);bumpRevision(c,v);return revisionView(revision(id,rid));
     }
     @Transactional(readOnly=true)
     public Map<String,Object> image(String token,long id,long rid,long fid){var a=actor(token);var d=document(id);read(a,project(num(d,"managing_project_id"),false));revision(id,rid);return imageForRevision(rid,fid);}
@@ -241,7 +262,19 @@ public class SopService {
         d.put("wait",wait);d.put("voice",enabled?1:0);d.put("voiceText",spoken);
     }
     private Map<String,Object> documentView(Map<String,Object> d,Map<String,Object> p,UserInfo a){var v=view(d);boolean open=number(p,"status")<2&&taskContentEditable(a,p,num(d,"id"));var c=new Context(a,p,d,Map.of());v.put("can_edit",open&&edit(a,p,"sop:update"));v.put("can_transfer_owner",manage(a,p));v.put("can_publish",open&&power(c,"sop:publish"));v.put("can_retire",open&&power(c,"sop:retire") );v.put("can_delete",open&&power(c,"sop:delete")&&db.published(num(d,"id"))==0&&db.bindings(num(d,"id"))==0&&resourceDb.contentReferences(num(d,"id"))==0);return v;}
-    private Map<String,Object> revisionView(Map<String,Object> r){var v=view(r);v.put("steps",db.steps(num(r,"id")).stream().map(s->{var step=view(s);step.put("resource_requirements",resources.read(num(s,"id")));step.put("attachments",db.attachments(num(s,"id")).stream().map(a->{var item=view(a);item.put("visual",visuals.read(num(a,"id")));return item;}).toList());return step;}).toList());return v;}
+    private boolean flag(Object value){return Boolean.TRUE.equals(value)||value instanceof Number n&&n.intValue()==1;}
+    private void validateCamera(long sopId,long cameraId){var camera=db.detectionCamera(cameraId);if(camera==null)throw bad("检测摄像头不可用，请重新选择");if(db.wrongCameraStation(sopId,num(camera,"station_id"))>0)throw bad("检测摄像头必须属于任务工位");}
+    private void validateDetection(long sopId,long sid){
+        var config=db.detection(sid);
+        if(config==null){for(var a:db.rawAttachments(sid)){var visual=visuals.read(num(a,"id"));if(visual!=null&&visual.get("detection_regions") instanceof List<?> regions&&!regions.isEmpty())throw bad("检测步骤尚未配置摄像头和检测基准图");}return;}
+        if(!flag(config.get("enabled")))return;
+        if(!(config.get("camera_id") instanceof Number camera)||!(config.get("attachment_id") instanceof Number aid)||!flag(config.get("confirmed")))throw bad("请确认检测摄像头和检测基准图后发布");
+        validateCamera(sopId,camera.longValue());
+        if(db.rawAttachments(sid).stream().noneMatch(a->num(a,"id")==aid.longValue()))throw bad("检测基准图不属于当前步骤");
+        var visual=visuals.read(aid.longValue());
+        if(visual==null||!(visual.get("detection_regions") instanceof List<?> regions)||regions.stream().noneMatch(r->r instanceof Map<?,?> m&&flag(m.get("enabled"))))throw bad("检测基准图至少需要一个参与检测的区域");
+    }
+    private Map<String,Object> revisionView(Map<String,Object> r){var v=view(r);v.put("steps",db.steps(num(r,"id")).stream().map(s->{var step=view(s);var detection=db.detection(num(s,"id"));if(detection!=null){detection.put("enabled",flag(detection.get("enabled")));detection.put("confirmed",flag(detection.get("confirmed")));}step.put("detection",detection==null?null:view(detection));step.put("resource_requirements",resources.read(num(s,"id")));var attachments=db.attachments(num(s,"id")).stream().map(a->{var item=view(a);item.put("visual",visuals.read(num(a,"id")));return item;}).toList();step.put("attachments",attachments);var selected=detection==null?attachments.stream().findFirst().orElse(null):attachments.stream().filter(a->Objects.equals(a.get("id"),String.valueOf(detection.get("attachment_id")))).findFirst().orElse(null);step.put("image",selected);return step;}).toList());return v;}
     private Map<String,Object> view(Map<String,Object> row){var v=new HashMap<String,Object>();row.forEach((k,x)->{if(k.equals("deleted_at")||k.equals("draft_slot"))return;if(x!=null&&(k.equals("id")||k.endsWith("_id")||k.equals("created_by")||k.equals("updated_by")||k.equals("published_by")||k.equals("retired_by")))x=x.toString();if(x instanceof LocalDateTime t)x=t.toInstant(ZoneOffset.UTC).toString();if(x instanceof java.sql.Timestamp t)x=t.toLocalDateTime().toInstant(ZoneOffset.UTC).toString();v.put(k,x);});return v;}
     private Map<String,Object> page(int p,int limit){if(p<1||limit<1||limit>100)throw bad("分页参数不正确");var q=new HashMap<String,Object>();q.put("limit",limit);q.put("offset",(long)(p-1)*limit);return q;}
     private String text(String s,int max,boolean required){s=s==null?null:s.trim();if(s!=null&&s.isEmpty())s=null;if(required&&s==null||s!=null&&s.length()>max)throw bad("内容为空或超过字段长度限制");return s;}

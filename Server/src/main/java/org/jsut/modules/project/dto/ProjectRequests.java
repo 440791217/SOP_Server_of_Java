@@ -5,6 +5,7 @@ import java.util.List;
 
 public final class ProjectRequests {
     private ProjectRequests() {}
+    public record StationLink(@NotNull @Positive Long station_id,@NotNull @Min(0) Integer version) {}
     public record Create(@NotBlank @Size(max=64) @Pattern(regexp="PRJ-[0-9]{12}-[0-9A-F]{6}",message="项目编号格式不正确") String code,@NotBlank @Size(max=128) String name,
                          @Size(max=128) String customer_name, @NotNull @Positive Long owner_user_id,
                          @Size(max=5000) String description) {}

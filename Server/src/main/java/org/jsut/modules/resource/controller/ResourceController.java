@@ -16,7 +16,11 @@ import java.util.*;
 @RestController @RequestMapping("/resource") @Tag(name="工位与工具设备") @SecurityRequirement(name="bearerAuth")
 public class ResourceController {
  private final ResourceService service;private final CameraMediaService media;public ResourceController(ResourceService service,CameraMediaService media){this.service=service;this.media=media;}
+ @GetMapping("/frame-rates") public ApiResponse<Map<String,Object>> frameRates(HttpServletRequest r){return ApiResponse.success(service.frameRates(token(r)));}
+ @PutMapping("/frame-rates") public ApiResponse<Map<String,Object>> frameRates(HttpServletRequest r,@Valid @RequestBody FrameRates body){return ApiResponse.success(service.saveFrameRates(token(r),body));}
  private String token(HttpServletRequest r){return AuthService.tokenFrom(r.getHeader("Authorization"));}
+ @GetMapping("/device/{id:[0-9]+}/capture-config") @Operation(summary="获取交给独立采集服务的摄像头配置，不在Java中拉流")
+ public ResponseEntity<ApiResponse<Map<String,Object>>> captureConfig(HttpServletRequest r,@PathVariable long id){return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.success(service.captureConfig(token(r),id)));}
  @GetMapping("/owner/options") @Operation(summary="查询资源负责人人选") public ApiResponse<List<Map<String,Object>>> owners(HttpServletRequest r,@RequestParam(required=false) String keyword){return ApiResponse.success(service.owners(token(r),keyword));}
  @GetMapping("/{kind:location|station|model|device}") @Operation(summary="分页查询工位、规格或设备")
  public ApiResponse<Map<String,Object>> list(HttpServletRequest r,@PathVariable String kind,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String keyword,@RequestParam(required=false) Integer status){return ApiResponse.success(service.list(token(r),kind,page,limit,keyword,status));}

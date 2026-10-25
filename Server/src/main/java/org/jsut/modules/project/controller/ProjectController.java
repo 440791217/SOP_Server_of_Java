@@ -20,6 +20,12 @@ public class ProjectController {
     private final ProjectService service;
     public ProjectController(ProjectService service){this.service=service;}
     private String token(HttpServletRequest r){return AuthService.tokenFrom(r.getHeader("Authorization"));}
+    @GetMapping("/{id:[0-9]+}/station/list")
+    public ApiResponse<Map<String,Object>> stations(HttpServletRequest r,@PathVariable long id,@RequestParam(required=false) String keyword,@RequestParam(defaultValue="false") boolean available){return ApiResponse.success(service.stations(token(r),id,keyword,available));}
+    @PostMapping("/{id:[0-9]+}/station")
+    public ApiResponse<Void> linkStation(HttpServletRequest r,@PathVariable long id,@Valid @RequestBody StationLink body){service.linkStation(token(r),id,body);return ApiResponse.success(null);}
+    @DeleteMapping("/{id:[0-9]+}/station/{stationId:[0-9]+}")
+    public ApiResponse<Void> unlinkStation(HttpServletRequest r,@PathVariable long id,@PathVariable long stationId,@Valid @RequestBody Version body){service.unlinkStation(token(r),id,stationId,body);return ApiResponse.success(null);}
     @GetMapping("/list") @Operation(summary="分页查询项目",description="page>=1，limit 1至100；keyword匹配编号或名称；status为0至3")
     public ApiResponse<Map<String,Object>> list(HttpServletRequest r,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String keyword,@RequestParam(required=false) Integer status){return ApiResponse.success(service.list(token(r),page,limit,keyword,status));}
     @GetMapping("/owner/options") @Operation(summary="查询新项目负责人人选",description="需要project:create；仅返回正常用户的ID、姓名、账号；keyword搜索，最多50条")

@@ -82,7 +82,7 @@ CREATE TABLE sop_step (
 
 CREATE TABLE sop_file (
   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  storage_key VARCHAR(255) NOT NULL,
+  storage_key VARCHAR(1024) NOT NULL,
   original_name VARCHAR(255) NOT NULL,
   mime_type VARCHAR(100) NOT NULL,
   file_kind TINYINT NOT NULL COMMENT '0 image, 1 video, 2 PDF',

@@ -18,14 +18,18 @@ import static org.jsut.modules.resource.service.ResourceSupport.*;
 @Service @Transactional(isolation=Isolation.READ_COMMITTED)
 public class ExecutionService {
  private final ExecutionMapper db;private final ResourceMapper resources;private final ProjectMapper projects;private final TaskService tasks;private final SopService content;private final AuthService auth;private final AuthMapper users;private final ObjectMapper json;
+ @org.springframework.beans.factory.annotation.Autowired private ExecutionEvidenceStorage evidenceStorage;
  public ExecutionService(ExecutionMapper db,ResourceMapper resources,ProjectMapper projects,TaskService tasks,SopService content,AuthService auth,AuthMapper users,ObjectMapper json){this.db=db;this.resources=resources;this.projects=projects;this.tasks=tasks;this.content=content;this.auth=auth;this.users=users;this.json=json;}
  private UserInfo actor(String token){var a=auth.authenticate(token);if(a.must_change_password()||!has(a,"resource:read"))throw denied();return a;}
  private void read(UserInfo a,long pid){var p=db.project(pid);if(p==null)throw missing();if(!a.is_superuser()&&n(p,"owner_user_id")!=uid(a)&&(!has(a,"project:read")||projects.member(pid,uid(a))==null))throw denied();}
  private Map<String,Object> record(UserInfo a,long id){var e=db.get(id);if(e==null)throw missing();read(a,n(e,"project_id"));return e;}
  @SuppressWarnings("unchecked") private Map<String,Object> snapshot(Map<String,Object> e){return json.readValue((String)e.get("content_snapshot"),Map.class);}
  @SuppressWarnings("unchecked") private List<Map<String,Object>> snapshotSteps(Map<String,Object> e){return (List<Map<String,Object>>)snapshot(e).get("steps");}
- private Map<String,Object> detailView(UserInfo a,Map<String,Object> e){var out=view(e);out.remove("content_snapshot");out.remove("request_key");out.put("content",snapshot(e));out.put("steps",db.steps(n(e,"id")).stream().map(org.jsut.modules.resource.service.ResourceSupport::view).toList());out.put("events",db.events(n(e,"id")).stream().map(org.jsut.modules.resource.service.ResourceSupport::view).toList());out.put("can_abort",n(e,"status")<2&&(a.is_superuser()||has(a,"resource:use")&&uid(a)==n(e,"operator_id")));out.put("can_operate",has(a,"resource:use")&&uid(a)==n(e,"operator_id")&&n(e,"status")<2);return out;}
+ private Map<String,Object> detailView(UserInfo a,Map<String,Object> e){var out=view(e);out.remove("content_snapshot");out.remove("request_key");out.put("content",snapshot(e));var steps=stepViews(n(e,"id"));var events=db.events(n(e,"id"));ExecutionTiming.apply(e,steps,events,db.now());var clockNow=db.now();var clocks=db.clocks(n(e,"id"));boolean awaiting=false;for(var step:steps){var stored=clocks.stream().filter(c->n(c,"position")==n(step,"position")).findFirst().orElse(null);if(stored!=null)step.putAll(ExecutionClock.viewClock(stored,clockNow));else if(step.get("confirmed_at")==null&&!awaiting){step.put("elapsed_ms",0L);step.put("timing_running",false);long budget=ExecutionClock.budget(snapshotSteps(e).get((int)n(step,"position")-1));step.put("remaining_ms",budget>0?budget:null);}if(step.get("confirmed_at")==null)awaiting=true;}out.put("clock_supported",true);out.put("steps",steps);out.put("events",events.stream().map(org.jsut.modules.resource.service.ResourceSupport::view).toList());out.put("can_abort",n(e,"status")<2&&(a.is_superuser()||has(a,"resource:use")&&uid(a)==n(e,"operator_id")));out.put("can_operate",has(a,"resource:use")&&uid(a)==n(e,"operator_id")&&n(e,"status")<2);return out;}
  @Transactional(readOnly=true) public Map<String,Object> detail(String token,long id){var a=actor(token);return detailView(a,record(a,id));}
+ private List<Map<String,Object>> stepViews(long id){
+  var photos=db.evidence(id);return db.steps(id).stream().map(step->{var out=view(step);photos.stream().filter(p->n(p,"position")==n(step,"position")).findFirst().ifPresent(photo->{var metadata=new HashMap<String,Object>();for(String key:List.of("position","camera_id","model_id","frame_id","image_width","image_height","captured_at","created_at","automatic"))if(photo.get(key)!=null)metadata.put(key,photo.get(key));metadata.put("detections",json.readValue((String)photo.get("detection_result"),List.class));out.put("evidence",view(metadata));});return out;}).toList();
+ }
  @Transactional(readOnly=true) public Map<String,Object> list(String token,int page,int limit,Long station,Long project,Long operator,String product,Integer status,boolean active,LocalDate from,LocalDate to,String projectName,String stationName,String operatorName){var a=actor(token);if(page<1||limit<1||limit>100||status!=null&&(status<0||status>3)||product!=null&&product.length()>128||from!=null&&to!=null&&from.isAfter(to))throw bad("查询参数不正确");var q=new HashMap<String,Object>();for(var value:new String[]{projectName,stationName,operatorName})if(value!=null&&value.length()>128)throw bad("搜索内容过长");q.put("projectName",projectName==null||projectName.isBlank()?null:projectName.trim());q.put("stationName",stationName==null||stationName.isBlank()?null:stationName.trim());q.put("operatorName",operatorName==null||operatorName.isBlank()?null:operatorName.trim());q.put("uid",uid(a));q.put("superuser",a.is_superuser());q.put("projectRead",has(a,"project:read"));q.put("station",station);q.put("project",project);q.put("operator",operator);q.put("product",product==null||product.isBlank()?null:product.trim());q.put("status",status);q.put("active",active);q.put("from",from==null?null:from.atStartOfDay());q.put("until",to==null?null:to.plusDays(1).atStartOfDay());q.put("limit",limit);q.put("offset",(long)(page-1)*limit);return Map.of("items",db.list(q).stream().map(org.jsut.modules.resource.service.ResourceSupport::view).toList(),"total",db.count(q),"can_start",has(a,"resource:use"));}
  public Map<String,Object> start(String token,Start r){
   var initial=actor(token);if(!has(initial,"resource:use"))throw denied();users.lockById(uid(initial));auth.requireCurrentSession(token,uid(initial));var a=actor(token);if(!has(a,"resource:use"))throw denied();
@@ -47,22 +51,57 @@ public class ExecutionService {
   event(n(d,"id"),"start",null,uid(a));return detailView(a,db.get(n(d,"id")));
  }
  public Map<String,Object> action(String token,long id,String action,Integer position,Action r){
+  return actionInternal(token,id,action,position,r,null,null);
+ }
+ public Map<String,Object> confirmEvidence(String token,long id,int position,Evidence r,org.springframework.web.multipart.MultipartFile file){return actionInternal(token,id,"confirm",position,new Action(r.version(),null,r.clock_session_id()),r,file);}
+ private Map<String,Object> actionInternal(String token,long id,String action,Integer position,Action r,Evidence evidence,org.springframework.web.multipart.MultipartFile file){
   var initial=actor(token);if(!has(initial,"resource:use"))throw denied();users.lockById(uid(initial));auth.requireCurrentSession(token,uid(initial));var a=actor(token);if(!has(a,"resource:use"))throw denied();var before=record(a,id);
   // Lock in the same order as task configuration: actor, project, station, execution.
   projects.lockProject(n(before,"project_id"));resources.lock(q("station",n(before,"station_id")));var e=db.lock(id);read(a,n(e,"project_id"));
-  if(uid(a)!=n(e,"operator_id")&&!(a.is_superuser()&&action.equals("abort")))throw denied();version(e,r.version());int status=(int)n(e,"status");if(status>=2)throw conflict("作业已结束，不能继续操作");
+  if(uid(a)!=n(e,"operator_id")&&!(a.is_superuser()&&action.equals("abort")))throw denied();
+  if(evidence!=null){var prior=db.stepEvidence(id,position);if(prior!=null){if(!evidence.request_key().equals(prior.get("request_key")))throw conflict("该步骤已保存现场照片，请刷新状态");return detailView(a,e);}}
+  version(e,r.version());int status=(int)n(e,"status");if(status>=2)throw conflict("作业已结束，不能继续操作");
   String reason=r.reason()==null?null:r.reason().trim();
   if(action.equals("pause")||action.equals("abort")){if(reason==null||reason.isEmpty())throw bad("请填写异常或中止原因");}
   if(action.equals("confirm")){
    if(status!=0)throw conflict("请先恢复作业");var pending=db.steps(id).stream().filter(s->s.get("confirmed_at")==null).findFirst().orElseThrow(()->conflict("所有步骤已确认，请完成作业"));
    if(position==null||n(pending,"position")!=position)throw conflict("请按顺序确认当前未完成步骤");
-   var x=new HashMap<String,Object>();x.put("id",id);x.put("position",position);x.put("actor",uid(a));changed(db.confirm(x));
+   var stepClock=db.clock(id,position);if(stepClock==null&&!db.clocks(id).isEmpty())throw conflict("请先建立当前步骤的执行会话");
+   ExecutionClock.requireSession(stepClock,r.clock_session_id(),db.now());
+   var step=snapshotSteps(e).get(position-1);
+   if(evidence==null&&step.get("detection") instanceof Map<?,?> config&&config.get("camera_id")!=null)throw bad("请保存本步骤现场照片后再确认");
+   if(evidence!=null){try{db.insertEvidence(evidenceStorage.save(e,position,step,evidence,file));}catch(DuplicateKeyException duplicate){throw conflict("照片保存请求编号已被使用，请刷新状态后重试");}}
+   var x=new HashMap<String,Object>();x.put("id",id);x.put("position",position);x.put("actor",uid(a));changed(db.confirm(x));db.stopClocks(id);
   }else if(action.equals("pause")){if(status!=0)throw conflict("只有进行中的作业可以暂停");status=1;
   }else if(action.equals("resume")){if(status!=1)throw conflict("只有暂停的作业可以恢复");status=0;
   }else if(action.equals("complete")){if(status!=0||db.steps(id).stream().anyMatch(s->s.get("confirmed_at")==null))throw conflict("请先恢复作业并确认全部步骤");status=2;
   }else if(action.equals("abort")){status=3;}else throw bad("不支持的作业操作");
+  if(!action.equals("confirm"))db.stopClocks(id);
   var d=new HashMap<String,Object>();d.put("id",id);d.put("status",status);d.put("active_station_id",status<2?e.get("station_id"):null);d.put("ended",status>=2);d.put("version",r.version());changed(db.update(d));event(id,action,action.equals("confirm")?"步骤 "+position:reason,uid(a));return detailView(a,db.get(id));
  }
+ public Map<String,Object> clock(String token,long id,Clock r){
+  var initial=actor(token);if(!has(initial,"resource:use"))throw denied();users.lockById(uid(initial));auth.requireCurrentSession(token,uid(initial));var a=actor(token);var before=record(a,id);
+  projects.lockProject(n(before,"project_id"));resources.lock(q("station",n(before,"station_id")));var e=db.lock(id);
+  if(uid(a)!=n(e,"operator_id")||!has(a,"resource:use"))throw denied();if(n(e,"status")!=0)throw conflict("作业未在执行，不能更新计时");
+  var pending=db.steps(id).stream().filter(s->s.get("confirmed_at")==null).findFirst().orElseThrow(()->conflict("所有步骤已完成"));if(n(pending,"position")!=r.position())throw conflict("只能更新当前步骤的计时");
+  var now=db.now();var stored=db.clock(id,r.position());var update=new HashMap<String,Object>();update.put("id",id);update.put("position",r.position());update.put("session",r.session_id());update.put("sequence",r.sequence());update.put("delta",0L);update.put("active",!r.action().equals("release"));
+  if(r.action().equals("claim")){
+   if(r.sequence()!=0||r.elapsed_ms()!=0)throw bad("新执行会话参数不正确");
+   if(stored==null){long budget=ExecutionClock.budget(snapshotSteps(e).get(r.position()-1));update.put("remaining",budget>0?budget:null);db.insertClock(update);}
+   else if(Objects.equals(stored.get("session_key"),r.session_id())){if(!ExecutionClock.active(stored,now))throw conflict("旧执行会话已失效，请重新继续作业");}
+   else {if(ExecutionClock.active(stored,now))throw conflict("该作业正在其他页面执行，请先退出原页面或等待连接失效");db.updateClock(update);}
+  }else{
+   if(stored==null||!Objects.equals(stored.get("session_key"),r.session_id()))throw conflict("执行会话已变化，请重新继续作业");
+   if(n(stored,"heartbeat_sequence")==r.sequence())return ExecutionClock.viewClock(stored,now);
+   ExecutionClock.requireSession(stored,r.session_id(),now);
+   if(r.sequence()!=n(stored,"heartbeat_sequence")+1)throw conflict("心跳顺序不正确，请重新同步");
+   Object raw=stored.get("heartbeat_at");var previous=raw instanceof java.sql.Timestamp stamp?stamp.toLocalDateTime():(java.time.LocalDateTime)raw;
+   if(r.elapsed_ms()>java.time.Duration.between(previous,now).toMillis()+2000)throw bad("心跳有效时长不正确");
+   update.put("delta",r.elapsed_ms());db.updateClock(update);
+  }
+  return ExecutionClock.viewClock(db.clock(id,r.position()),db.now());
+ }
  private void event(long id,String action,String reason,long actor){var q=new HashMap<String,Object>();q.put("id",id);q.put("action",action);q.put("reason",reason);q.put("actor",actor);db.event(q);}
+ @Transactional(readOnly=true) public Map<String,Object> evidenceImage(String token,long id,int position){var a=actor(token);record(a,id);var row=db.stepEvidence(id,position);if(row==null)throw missing();return evidenceStorage.image(row);}
  @Transactional(readOnly=true) public Map<String,Object> image(String token,long id,long fid){var a=actor(token);var e=record(a,id);boolean allowed=false;for(var s:snapshotSteps(e)){Object attachments=s.get("attachments");if(attachments instanceof List<?> list)for(var item:list)if(item instanceof Map<?,?> m&&Long.toString(fid).equals(String.valueOf(m.get("file_id"))))allowed=true;}if(!allowed)throw missing();return content.taskImage(n(e,"revision_id"),fid);}
 }

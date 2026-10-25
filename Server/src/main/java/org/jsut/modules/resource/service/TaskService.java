@@ -32,7 +32,9 @@ public class TaskService {
   for(var t:db.stationTasks(stationId)){var p=project(n(t,"project_id"));if(!owner(a,p)&&(!has(a,"project:read")||projects.member(n(p,"id"),uid(a))==null))continue;
    var out=taskView(t);out.put("can_manage",manage(a,p,sub(n(p,"id"),n(t,"subproject_id"))));var reasons=new ArrayList<String>(issues(t));
    if(n(t,"status")==2)reasons.add("任务已取消");
+   if(n(t,"project_status")==0)reasons.add("项目尚未开始，请先开始项目");
    if(n(t,"project_status")>=2)reasons.add("项目已完成或归档");
+   if(n(t,"subproject_status")==0)reasons.add("子项目尚未开始，请先开始子项目");
    if(n(t,"subproject_status")>=2)reasons.add("子项目已完成或归档");
    out.put("onsite_unavailable_reasons",reasons);out.put("onsite_available",reasons.isEmpty());items.add(out);}
   return Map.of("items",items);
@@ -61,6 +63,7 @@ public class TaskService {
   var pids=new TreeSet<Long>();pids.add(pid);if(source!=null)pids.add(source);for(long p:pids)if(projects.lockProject(p)==null)throw missing();
   var p=project(pid);var s=sub(pid,sid);read(a,p);if(!manage(a,p,s))throw denied();
   if(!cancelled&&r.station_id()==null)throw bad("请选择工位；历史任务需补齐工位后保存");
+  if(!cancelled&&r.station_id()!=null&&projects.stationLinked(pid,r.station_id())==0)throw bad("请选择当前项目关联的工位");
   if(!Integer.valueOf(1).equals(projects.member(pid,r.owner_user_id())))throw bad("负责人必须是项目有效编辑成员");
   if(id!=null){before=db.task(id);version(before,r.version());if(n(before,"status")==2)throw conflict("已取消任务只读，请另建任务");}
   if(!cancelled&&r.station_id()!=null){if(!has(a,"resource:read")&&changedStation(before,r.station_id()))throw denied();var station=db.lock(q("station",r.station_id()));if(station==null||n(station,"status")!=0)throw bad("工位不可用");}
@@ -89,7 +92,8 @@ public class TaskService {
    sopId=n(owned,"sop_id");var doc=sops.document(sopId);if(doc==null||n(doc,"managing_project_id")!=pid)throw conflict("任务内容归属异常，请核对");
    if(document==null||n(doc,"owner_user_id")!=n(document,"owner_user_id"))throw conflict("任务内容负责人已变化，请刷新");
    content.syncTaskIdentity(token,sopId,(String)task.get("name"),n(task,"owner_user_id"));
-   var result=content.taskDraft(token,sopId);draft=(Map<String,Object>)result.get("revision");created=Boolean.TRUE.equals(result.get("created"));
+   Long activeRevision=task.get("sop_id")!=null&&n(task,"sop_id")==sopId&&task.get("revision_id")!=null?n(task,"revision_id"):null;
+   var result=content.taskDraft(token,sopId,activeRevision);draft=(Map<String,Object>)result.get("revision");created=Boolean.TRUE.equals(result.get("created"));
   }
   if(created)changed(db.bumpTaskContent(Map.of("id",id,"version",request.version(),"actor",uid(a))));
   return Map.of("sop_id",Long.toString(sopId),"revision_id",draft.get("id"),"task",taskView(db.task(id)));
